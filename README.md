@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # JengaSec Infrastructure
 
 Ansible automation that builds and maintains the servers behind **JengaSec 2026** —
@@ -179,3 +180,7 @@ status table.
 ---
 
 Strathmore Cybersecurity Club · Nairobi
+=======
+# jengasec-website-infrastructure
+This reporsitory contains all the automation files needed to create the website's supporting infrastructure.
+>>>>>>> 23b00d1f2786c0ebaad2b9f64193a08bcf52e83b
