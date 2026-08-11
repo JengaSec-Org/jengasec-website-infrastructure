@@ -1,0 +1,45 @@
+---
+# Phase 4 — Application platform
+#
+# STATUS: every role here is a stub. Running this playbook fails deliberately
+# rather than reporting success while configuring nothing.
+#
+#   make platform LIMIT=server1
+#
+# ROLE ORDER, once these are written:
+#   redis      before django, which will use it for sessions and cache
+#   gunicorn   creates the socket nginx proxies to
+#   django     the application itself — code, venv, migrations, static
+#   nginx      last, so it never proxies to a socket that does not exist yet
+#
+# See docs/roles.md for implementation status and roles/<name>/README.md for
+# what each one is intended to do.
+
+- name: "Phase 4 — application platform"
+  hosts: web
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Confirm the base phases have run
+      ansible.builtin.assert:
+        that:
+          - ansible_python_version is version('3.9', '>=')
+        fail_msg: >-
+          Python is missing or too old on {{ inventory_hostname }}. Run
+          bootstrap.yml before deploying the application platform.
+        success_msg: "Python {{ ansible_python_version }} present"
+      tags: [always]
+
+  roles:
+    - role: redis
+      tags: [redis]
+
+    - role: gunicorn
+      tags: [gunicorn]
+
+    - role: django
+      tags: [django]
+
+    - role: nginx
+      tags: [nginx]

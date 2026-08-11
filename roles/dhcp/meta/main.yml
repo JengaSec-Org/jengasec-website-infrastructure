@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: dhcp
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: isc-dhcp-server for the competition LAN.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - dhcp
+
+dependencies: []

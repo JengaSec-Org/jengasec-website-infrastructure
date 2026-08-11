@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: dns
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Bind9 authoritative and recursive DNS for the JengaSec network.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - dns
+    - bind9
+
+dependencies: []

@@ -1,0 +1,28 @@
+---
+# Handlers for the `audit` role.
+
+# augenrules concatenates every file in /etc/audit/rules.d, in lexical order,
+# into /etc/audit/audit.rules and loads the result. This is the supported way to
+# apply rule changes on Debian.
+#
+# failed_when is relaxed for one specific case: once the ruleset is immutable
+# (-e 2), loading fails until the machine reboots. That is the feature working,
+# not an error, so the role reports it instead of failing the play.
+- name: Load audit rules
+  ansible.builtin.command:
+    cmd: augenrules --load
+  register: audit_load
+  changed_when: true
+  failed_when:
+    - audit_load.rc != 0
+    - "'enabled 2' not in (audit_load.stderr | default('') + audit_load.stdout | default(''))"
+    - "'Operation not permitted' not in (audit_load.stderr | default(''))"
+  listen: "load audit rules"
+
+# auditd is restarted only for auditd.conf changes — log sizes, rotation,
+# disk-full behaviour. Rule changes go through augenrules above.
+- name: Restart auditd
+  ansible.builtin.systemd:
+    name: "{{ audit_service_name }}"
+    state: restarted
+  listen: "restart auditd"

@@ -1,0 +1,177 @@
+---
+# firewall — Phase 2. UFW.
+#
+# ORDER IS THE WHOLE POINT OF THIS FILE:
+#   1. merge the rule lists
+#   2. assert SSH is among them            <- refuses to continue if not
+#   3. add the SSH rule FIRST, explicitly
+#   4. add every other rule
+#   5. set default policies
+#   6. only now enable UFW
+#
+# Enabling UFW with a default-deny policy before the SSH rule exists drops your
+# session mid-play and leaves the host unreachable. Steps 2 and 3 are the whole
+# reason this role is not four lines long.
+
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  tags: [firewall, packages]
+
+# ── 1. Merge ────────────────────────────────────────────────────────────────
+
+- name: Merge the rule lists
+  ansible.builtin.set_fact:
+    firewall_rules_merged: "{{ firewall_rules_common + firewall_rules_group + firewall_rules_host }}"
+  tags: [firewall, always]
+
+- name: Show the ruleset about to be applied
+  ansible.builtin.debug:
+    msg: >-
+      {{ firewall_rules_merged | length }} rules for {{ inventory_hostname }}:
+      {% for rule in firewall_rules_merged %}
+      {{ rule.proto | upper }}/{{ rule.port }} from {{ rule.from | default('any') }} ({{ rule.comment | default('no comment') }});
+      {% endfor %}
+  tags: [firewall, always]
+
+# ── 2. Assert ───────────────────────────────────────────────────────────────
+
+# The guard that matters. If nothing in the merged ruleset permits the SSH port,
+# enabling UFW would end this session and every future one.
+- name: Refuse to proceed without an SSH rule
+  ansible.builtin.assert:
+    that:
+      - firewall_rules_merged | selectattr('port', 'defined')
+        | map(attribute='port') | map('string')
+        | select('equalto', firewall_ssh_port | string) | list | length > 0
+    fail_msg: >-
+      No rule in the merged ruleset allows SSH on port {{ firewall_ssh_port }}.
+      Enabling UFW with a default-deny policy would make {{ inventory_hostname }}
+      permanently unreachable. Add a rule to firewall_rules_common in
+      group_vars/all/main.yml. If you genuinely mean to do this — for a host you
+      only reach by console — set firewall_require_ssh_rule: false.
+    success_msg: "SSH on port {{ firewall_ssh_port }} is permitted — safe to continue"
+  when: firewall_require_ssh_rule | bool
+  tags: [firewall, always]
+
+# ── Optional reset ──────────────────────────────────────────────────────────
+
+- name: Reset UFW to a known state
+  community.general.ufw:
+    state: reset
+  when: firewall_reset_before_apply | bool
+  tags: [firewall, reset]
+
+# ── 3. SSH first, before anything else ──────────────────────────────────────
+
+# Deliberately redundant with the rule list. It costs one task and it means the
+# SSH rule exists before `ufw enable` no matter how the lists are ordered or
+# what someone changes in group_vars later.
+- name: Allow SSH before any other rule
+  community.general.ufw:
+    rule: "{{ 'limit' if firewall_rate_limit_ssh else 'allow' }}"
+    port: "{{ firewall_ssh_port | string }}"
+    proto: tcp
+    comment: "SSH — applied first so enabling UFW cannot lock us out"
+  tags: [firewall, rules, ssh]
+
+# ── 4. Every other rule ─────────────────────────────────────────────────────
+
+- name: Apply the ruleset
+  community.general.ufw:
+    rule: "{{ item.rule | default('allow') }}"
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto | default('tcp') }}"
+    from_ip: "{{ item.from | default('any') }}"
+    direction: "{{ item.direction | default('in') }}"
+    comment: "{{ item.comment | default('managed by jengasec-infrastructure') }}"
+  loop: "{{ firewall_rules_merged }}"
+  loop_control:
+    label: "{{ item.proto | default('tcp') }}/{{ item.port }} from {{ item.from | default('any') }}"
+  tags: [firewall, rules]
+
+# ── 5. Default policy ───────────────────────────────────────────────────────
+
+- name: Set the default incoming policy
+  community.general.ufw:
+    default: "{{ firewall_default_incoming }}"
+    direction: incoming
+  tags: [firewall, policy]
+
+- name: Set the default outgoing policy
+  community.general.ufw:
+    default: "{{ firewall_default_outgoing }}"
+    direction: outgoing
+  tags: [firewall, policy]
+
+- name: Set the default routed policy
+  community.general.ufw:
+    default: "{{ firewall_default_routed }}"
+    direction: routed
+  tags: [firewall, policy]
+
+- name: Configure logging
+  community.general.ufw:
+    logging: "{{ firewall_logging }}"
+  tags: [firewall, logging]
+
+# UFW manages IPv6 rules only when this is on. With IPv6 disabled in the
+# networking role it makes no difference; if you ever enable IPv6 there and not
+# here, the host ends up with an unfiltered v6 address — worse than no firewall,
+# because you believe you are protected.
+- name: Align UFW's IPv6 setting with the networking role
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^IPV6='
+    line: "IPV6={{ 'yes' if firewall_ipv6 else 'no' }}"
+    state: present
+  notify: Reload ufw
+  tags: [firewall, ipv6]
+
+# ── 6. Enable ───────────────────────────────────────────────────────────────
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+  when: firewall_enabled | bool
+  tags: [firewall, enable]
+
+- name: Ensure UFW starts at boot
+  ansible.builtin.systemd:
+    name: ufw
+    enabled: true
+    state: started
+  when: firewall_enabled | bool
+  tags: [firewall, enable]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Read back the active ruleset
+  ansible.builtin.command:
+    cmd: ufw status verbose
+  register: firewall_status
+  changed_when: false
+  tags: [firewall, verify]
+
+- name: Report the active ruleset
+  ansible.builtin.debug:
+    var: firewall_status.stdout_lines
+  tags: [firewall, verify]
+
+# Reads the live kernel state rather than trusting that the tasks above did what
+# they claimed. If SSH is not actually permitted, say so loudly while there is
+# still a session open to fix it in.
+- name: Confirm SSH survived
+  ansible.builtin.assert:
+    that:
+      - firewall_status.stdout is search(firewall_ssh_port | string)
+    fail_msg: >-
+      UFW is active but port {{ firewall_ssh_port }} does not appear in the live
+      ruleset on {{ inventory_hostname }}. DO NOT CLOSE THIS SESSION. Run
+      `sudo ufw allow {{ firewall_ssh_port }}/tcp` on the host now.
+    success_msg: "Port {{ firewall_ssh_port }} present in the live ruleset"
+  when:
+    - firewall_enabled | bool
+    - firewall_require_ssh_rule | bool
+  tags: [firewall, verify]

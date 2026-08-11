@@ -1,0 +1,44 @@
+---
+# yamllint configuration for JengaSec Infrastructure.
+# Run with: yamllint .
+
+extends: default
+
+ignore: |
+  .venv/
+  collections/
+  logs/
+  .facts_cache/
+
+rules:
+  # Ansible task names and inline Jinja2 conditionals routinely run long.
+  # 120 is enforced as a warning so it guides without blocking a run.
+  line-length:
+    max: 120
+    level: warning
+    allow-non-breakable-words: true
+
+  # "---" at the top of every YAML file is the house style here.
+  document-start:
+    present: true
+
+  # Ansible convention: two-space indent, sequences indented under their key.
+  indentation:
+    spaces: 2
+    indent-sequences: true
+
+  # yes/no/on/off are valid YAML booleans but ambiguous to read;
+  # this repo uses true/false everywhere.
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+
+  comments:
+    min-spaces-from-content: 1
+
+  braces:
+    max-spaces-inside: 1
+
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: false

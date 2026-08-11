@@ -1,0 +1,63 @@
+---
+# git — Phase 1
+# Git, system-wide configuration, and host key trust.
+
+- name: Install git
+  ansible.builtin.apt:
+    name: "{{ git_packages }}"
+    state: present
+  tags: [git, packages]
+
+- name: Write the system-wide git configuration
+  ansible.builtin.template:
+    src: gitconfig.j2
+    dest: /etc/gitconfig
+    owner: root
+    group: root
+    mode: "0644"
+  when: git_manage_system_config | bool
+  tags: [git, config]
+
+# ── Host key trust ──────────────────────────────────────────────────────────
+
+- name: Trust git server host keys
+  ansible.builtin.known_hosts:
+    path: /etc/ssh/ssh_known_hosts
+    name: "{{ item.name }}"
+    key: "{{ item.name }} {{ item.key }}"
+    state: present
+  loop: "{{ git_known_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - git_manage_known_hosts | bool
+    - item.key | length > 0
+  tags: [git, known-hosts]
+
+- name: Warn about unset host keys
+  ansible.builtin.debug:
+    msg: >-
+      git_manage_known_hosts is true but no key is set for {{ item.name }}.
+      An SSH clone will prompt for the fingerprint and hang, or accept whatever
+      answers. Fetch the real key with `ssh-keyscan -t ed25519 {{ item.name }}`
+      and put it in group_vars.
+  loop: "{{ git_known_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - git_manage_known_hosts | bool
+    - item.key | length == 0
+  tags: [git, known-hosts]
+
+# ── Deploy key ──────────────────────────────────────────────────────────────
+
+- name: Install the repository deploy key
+  ansible.builtin.copy:
+    src: "{{ git_deploy_key_src | default('deploy_key') }}"
+    dest: "{{ git_deploy_key_path }}"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0600"
+  when: git_deploy_key_enabled | bool
+  no_log: true
+  tags: [git, deploy-key]

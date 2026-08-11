@@ -1,0 +1,41 @@
+---
+# gunicorn — Phase 4
+# WSGI application server running the Django project under systemd.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Install gunicorn into the application virtualenv
+#   - Render the systemd unit and socket unit
+#   - Worker count, class, and timeout tuning
+#   - Unix socket ownership shared with the nginx user
+#   - Log destinations under app_log_dir
+#   - Graceful reload on deployment
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the gunicorn role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'gunicorn' role is a Phase 4 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/gunicorn/README.md.
+  when: not gunicorn_enabled | bool
+  tags:
+    - gunicorn
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install gunicorn
+#   ansible.builtin.apt:
+#     name: "{{ gunicorn_packages }}"
+#     state: present
+#   when: gunicorn_enabled | bool
+#   notify: Restart gunicorn

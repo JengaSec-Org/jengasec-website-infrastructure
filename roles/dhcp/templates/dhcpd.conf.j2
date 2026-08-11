@@ -1,0 +1,83 @@
+# {{ common_managed_banner }}
+#
+# DHCP server configuration for {{ inventory_hostname }}.
+# Validated with `dhcpd -t -cf` before this file replaces the live one.
+#
+# Subnets and reservations come from group_vars/dhcp/main.yml — adding a
+# reserved address is a data edit, not a change to this template.
+
+# ── Global settings ─────────────────────────────────────────────────────────
+default-lease-time {{ dhcp_default_lease_time }};
+max-lease-time {{ dhcp_max_lease_time }};
+
+# 'none' — DHCP does not write records into Bind. Letting it do so would mean
+# anything able to request a lease can create a DNS name, including one that
+# shadows an existing service.
+ddns-update-style {{ dhcp_ddns_update_style }};
+
+# Lease activity is a record of what was physically on the network and when,
+# which is exactly what you want during an incident review.
+log-facility {{ dhcp_log_facility }};
+{% if dhcp_authoritative %}
+
+# This server is the authority for these subnets: it will actively tell a client
+# holding a wrong address to drop it (DHCPNAK) rather than staying quiet.
+#
+# Correct on a network you own. Actively harmful on a shared one — it makes your
+# server override the campus DHCP server for every device on the segment.
+authoritative;
+{% endif %}
+
+# ── Options handed to every client ──────────────────────────────────────────
+option domain-name "{{ dhcp_domain_name }}";
+{% if dhcp_domain_name_servers %}
+option domain-name-servers {{ dhcp_domain_name_servers | join(', ') }};
+{% endif %}
+{% if dhcp_ntp_servers %}
+option ntp-servers {{ dhcp_ntp_servers | join(', ') }};
+{% endif %}
+{% if dhcp_pxe_enabled %}
+
+# ── PXE boot ────────────────────────────────────────────────────────────────
+next-server {{ dhcp_pxe_server }};
+filename "{{ dhcp_pxe_filename }}";
+{% else %}
+
+# ── PXE boot (disabled) ─────────────────────────────────────────────────────
+# For imaging competition machines from a golden image. Set dhcp_pxe_enabled
+# and dhcp_pxe_server once a TFTP server exists.
+#
+#   next-server <tftp-server-address>;
+#   filename "pxelinux.0";
+{% endif %}
+
+# ── Subnets ─────────────────────────────────────────────────────────────────
+{% for subnet in dhcp_subnets %}
+subnet {{ subnet.network }} netmask {{ subnet.netmask }} {
+    range {{ subnet.range_start }} {{ subnet.range_end }};
+    option routers {{ subnet.gateway }};
+{% if subnet.broadcast is defined %}
+    option broadcast-address {{ subnet.broadcast }};
+{% endif %}
+    option subnet-mask {{ subnet.netmask }};
+}
+
+{% endfor %}
+{% if dhcp_reservations %}
+# ── Reservations ────────────────────────────────────────────────────────────
+# Fixed addresses for equipment that must stay put. These sit OUTSIDE the
+# dynamic ranges above — the role asserts that before writing this file.
+{% for reservation in dhcp_reservations %}
+host {{ reservation.hostname }} {
+    hardware ethernet {{ reservation.mac }};
+    fixed-address {{ reservation.ip }};
+}
+{% endfor %}
+{% else %}
+# ── Reservations ────────────────────────────────────────────────────────────
+# None yet. Add competition equipment to dhcp_reservations as you commission it:
+#
+#   - hostname: red-team-workstation-01
+#     mac: "aa:bb:cc:dd:ee:01"
+#     ip: "10.0.0.50"
+{% endif %}

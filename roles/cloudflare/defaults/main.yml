@@ -1,0 +1,18 @@
+---
+# Defaults for the `cloudflare` role — Phase 9.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+cloudflare_enabled: false
+
+# tunnel | dns — tunnel needs no inbound ports
+cloudflare_mode: tunnel
+cloudflare_api_token: "{{ vault_cloudflare_api_token }}"
+cloudflare_zone_id: "{{ vault_cloudflare_zone_id }}"
+cloudflare_tunnel_name: "jengasec"
+cloudflare_dns_records: []
+# orange cloud — hides the origin address
+cloudflare_proxied: true

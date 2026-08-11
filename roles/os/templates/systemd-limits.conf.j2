@@ -1,0 +1,25 @@
+# {{ common_managed_banner }}
+#
+# Default resource limits for every systemd-managed service.
+#
+# This is the file that actually governs gunicorn, nginx, and PostgreSQL.
+# /etc/security/limits.conf does NOT apply to them — that is a PAM file, and
+# systemd services never go through PAM. Setting only the PAM limits and
+# wondering why nginx still reports "too many open files" is a rite of passage;
+# this drop-in is how you skip it.
+#
+# An individual unit can still raise or lower its own limit with LimitNOFILE.
+
+[Manager]
+{% set nofile_hard = (os_limits | selectattr('limit_item', 'equalto', 'nofile')
+                                | selectattr('limit_type', 'equalto', 'hard')
+                                | map(attribute='value') | first | default(32768)) %}
+{% set nofile_soft = (os_limits | selectattr('limit_item', 'equalto', 'nofile')
+                                | selectattr('limit_type', 'equalto', 'soft')
+                                | map(attribute='value') | first | default(16384)) %}
+DefaultLimitNOFILE={{ nofile_soft }}:{{ nofile_hard }}
+
+# Core dumps stay off. A core file from the Django process would contain the
+# secret key and whatever submission data was in memory, written to disk in
+# plaintext, readable by anyone who can reach the file.
+DefaultLimitCORE=0

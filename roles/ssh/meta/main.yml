@@ -1,0 +1,25 @@
+---
+galaxy_info:
+  role_name: ssh
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Hardened OpenSSH server configuration.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - hardening
+    - ssh
+
+# `users` must run first — this role disables password authentication, and
+# without an installed key that makes the host unreachable. The ordering is
+# enforced in playbooks/bootstrap.yml rather than declared here, so that running
+# the ssh role alone does not silently create accounts as a side effect. The
+# role asserts the key exists at run time instead.
+dependencies: []

@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: filesystem_security
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: File ownership, permissions, ACLs, and drift-detection scans.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - security
+    - hardening
+
+dependencies: []

@@ -1,0 +1,120 @@
+---
+# dhcp — Phase 2. isc-dhcp-server.
+#
+# Read the warning at the top of defaults/main.yml before enabling this.
+
+- name: Report that DHCP is disabled
+  ansible.builtin.debug:
+    msg: >-
+      dhcp_configure is false, so no DHCP server is deployed on
+      {{ inventory_hostname }}. This is the default: a second DHCP server on a
+      shared network hands out conflicting leases to every device on the
+      segment. Confirm with your network administrator, then set
+      dhcp_configure: true in group_vars/dhcp/main.yml.
+  when: not dhcp_configure | bool
+  tags: [dhcp, always]
+
+- name: Validate the DHCP configuration is complete
+  ansible.builtin.assert:
+    that:
+      - dhcp_subnets | length > 0
+      - dhcp_interfaces | length > 0
+      - dhcp_domain_name_servers | length > 0
+    fail_msg: >-
+      Incomplete DHCP configuration. dhcp_subnets, dhcp_interfaces and
+      dhcp_domain_name_servers must all be set in group_vars/dhcp/main.yml.
+      A DHCP server with no nameservers hands out leases that leave clients
+      unable to resolve anything, which looks like a total network failure.
+    success_msg: "{{ dhcp_subnets | length }} subnet(s) configured"
+  when: dhcp_configure | bool
+  tags: [dhcp, always]
+
+# Reservations inside the dynamic pool are a genuine and confusing failure: the
+# server can lease the address to another client before the reserved host asks
+# for it, and then the two fight over it intermittently — which presents as
+# "the network is flaky" rather than as a configuration error.
+#
+# Compared on the final octet, in plain Jinja, so this needs no extra collection.
+# It assumes reservation and pool share a /24, which every subnet in this
+# repository does; the assert simply passes for anything outside that.
+- name: Check reservations fall outside the dynamic range
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.1.ip.split('.')[0:3] | join('.')) != (item.0.range_start.split('.')[0:3] | join('.'))
+        or (item.1.ip.split('.')[3] | int) < (item.0.range_start.split('.')[3] | int)
+        or (item.1.ip.split('.')[3] | int) > (item.0.range_end.split('.')[3] | int)
+    fail_msg: >-
+      Reservation {{ item.1.hostname | default(item.1.ip) }} ({{ item.1.ip }})
+      sits inside the dynamic range
+      {{ item.0.range_start }}-{{ item.0.range_end }}. The server may lease that
+      address to another client before the reserved host asks for it, and the
+      two will then conflict intermittently. Move the reservation below
+      {{ item.0.range_start }}.
+    quiet: true
+  loop: "{{ dhcp_subnets | product(dhcp_reservations) | list }}"
+  loop_control:
+    label: "{{ item.1.hostname | default(item.1.ip) }}"
+  when:
+    - dhcp_configure | bool
+    - dhcp_reservations | length > 0
+  tags: [dhcp, validate]
+
+- name: Install isc-dhcp-server
+  ansible.builtin.apt:
+    name: "{{ dhcp_packages }}"
+    state: present
+  when: dhcp_configure | bool
+  tags: [dhcp, packages]
+
+- name: Write dhcpd.conf
+  ansible.builtin.template:
+    src: dhcpd.conf.j2
+    dest: /etc/dhcp/dhcpd.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "dhcpd -t -cf %s"
+    backup: true
+  when: dhcp_configure | bool
+  notify: Restart dhcp
+  tags: [dhcp, config]
+
+# Which interfaces the daemon binds to. Getting this wrong means answering
+# requests on a network you do not own — the exact failure the warning in
+# defaults/main.yml describes.
+- name: Set the DHCP listening interfaces
+  ansible.builtin.template:
+    src: isc-dhcp-server.j2
+    dest: /etc/default/isc-dhcp-server
+    owner: root
+    group: root
+    mode: "0644"
+  when: dhcp_configure | bool
+  notify: Restart dhcp
+  tags: [dhcp, config]
+
+- name: Enable and start the DHCP server
+  ansible.builtin.systemd:
+    name: "{{ dhcp_service_name }}"
+    enabled: true
+    state: started
+  when: dhcp_configure | bool
+  tags: [dhcp, service]
+
+- name: Confirm the service is running
+  ansible.builtin.systemd:
+    name: "{{ dhcp_service_name }}"
+  register: dhcp_service_state
+  when: dhcp_configure | bool
+  changed_when: false
+  tags: [dhcp, verify]
+
+- name: Report the service state
+  ansible.builtin.debug:
+    msg: >-
+      {{ dhcp_service_name }} is
+      {{ dhcp_service_state.status.ActiveState | default('unknown') }},
+      serving {{ dhcp_interfaces | join(', ') }}
+  when: dhcp_configure | bool
+  tags: [dhcp, verify]

@@ -1,0 +1,13 @@
+---
+# Handlers for the `storage` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart storage
+  ansible.builtin.systemd:
+    name: "{{ storage_service_name | default('storage') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart storage"
+  when: storage_enabled | bool

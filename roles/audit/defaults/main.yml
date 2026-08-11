@@ -1,0 +1,90 @@
+---
+# Defaults for the `audit` role — Phase 3. auditd.
+#
+# auditd records kernel-level events: who ran what, who read which file, who
+# changed a permission. It is the log you want to have been collecting BEFORE
+# an incident, because it cannot be reconstructed afterwards.
+#
+# For a cybersecurity club this is also the most directly useful role in the
+# repository — the audit log is what a blue team actually reads during an
+# exercise.
+
+audit_packages:
+  - auditd
+  - audispd-plugins
+
+audit_service_name: auditd
+
+# ── Buffer and failure behaviour ────────────────────────────────────────────
+# Kernel buffer for audit events. 8192 is the common recommendation for a busy
+# server; too small and events are dropped silently under load, which is exactly
+# when you need them.
+audit_buffer_size: 8192
+
+# What the kernel does if the buffer overflows:
+#   0  silent
+#   1  printk — log it and continue        <- our choice
+#   2  panic — halt the machine
+#
+# 2 is the strict CIS answer and it means a burst of audit events takes the
+# competition platform down. 1 keeps the server running and leaves evidence in
+# the kernel log that events were lost.
+audit_failure_mode: 1
+
+# ── Log management ──────────────────────────────────────────────────────────
+audit_max_log_file_mb: 50
+audit_num_logs: 10                 # ~500 MB total
+audit_max_log_file_action: rotate
+audit_space_left_mb: 200
+audit_space_left_action: email
+audit_admin_space_left_mb: 100
+
+# What to do when the disk is genuinely full. 'halt' is the CIS answer and it
+# means a full disk stops the server mid-competition. 'single' drops to single
+# user, which is barely better. We keep running and rotate — losing some audit
+# history is preferable to losing the event.
+audit_disk_full_action: rotate
+audit_admin_space_left_action: single
+
+audit_action_mail_acct: root
+
+# ── Immutable mode ──────────────────────────────────────────────────────────
+# '-e 2' makes the rules immutable: they cannot be changed without a reboot.
+# That is the correct end state — an attacker with root can otherwise simply
+# turn off the logging that would record what they do next.
+#
+# It is off by default because every subsequent rule change then requires a
+# reboot, which is painful during development. Turn it on before the
+# competition, as a deliberate step. See README.md.
+audit_immutable: false
+
+# ── What to watch ───────────────────────────────────────────────────────────
+# Each block below is a category that can be turned off individually. The rules
+# themselves are in templates/jengasec.rules.j2, each with a comment explaining
+# what it catches.
+
+audit_watch_authentication: true       # logins, sudo, su
+audit_watch_privilege_escalation: true # setuid/setgid execution
+audit_watch_user_management: true      # passwd, shadow, group, sudoers
+audit_watch_system_config: true        # /etc, sshd_config, network config
+audit_watch_file_deletion: true        # unlink, rename — evidence destruction
+audit_watch_permission_changes: true   # chmod, chown, setxattr
+audit_watch_module_loading: true       # insmod, modprobe — rootkits
+audit_watch_time_changes: true         # clock tampering breaks log correlation
+audit_watch_mount: true                # mounting a device to exfiltrate
+
+# Application-specific: the submission and judging data.
+# Reading a submission before the deadline, or altering a score after it, is the
+# kind of thing this competition exists to catch.
+audit_watch_application: true
+audit_application_paths:
+  - "{{ app_media_dir | default('/opt/jengasec/app/media') }}"
+  - "{{ app_source_dir | default('/opt/jengasec/app') }}/config"
+
+# ── Noise control ───────────────────────────────────────────────────────────
+# Excluded to keep the log readable. Every exclusion is a deliberate blind spot,
+# so keep this list short and justified.
+audit_exclude_paths:
+  - /var/log/audit          # auditd writing its own log
+  - /var/lib/systemd
+  - /var/cache

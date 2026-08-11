@@ -1,0 +1,145 @@
+---
+# Defaults for the `ssh` role — Phase 1.
+#
+# READ THIS BEFORE CHANGING ANYTHING HERE.
+#
+# This role hardens the only remote access path to the server. A mistake does
+# not produce an error message — it produces a machine you cannot log into,
+# which on a rack in a locked room means a physical trip and possibly a rescue
+# boot. Every safety measure in tasks/main.yml exists because of a specific way
+# people lock themselves out.
+
+# ── Service ─────────────────────────────────────────────────────────────────
+ssh_service_name: ssh            # Debian calls it 'ssh', not 'sshd'
+
+# ── Port ────────────────────────────────────────────────────────────────────
+# Moving off 22 removes most automated scanning noise from your logs. It is not
+# a security control — anyone targeting you finds it in one nmap run.
+#
+# If you change this, the ORDER is fixed and not optional:
+#   1. firewall role opens the new port      (while 22 is still open)
+#   2. ssh role moves sshd to it
+#   3. confirm you can log in on the new port, from a second terminal
+#   4. only then close 22
+# Doing 2 before 1 locks you out. Read docs/runbook.md.
+ssh_port: 22
+
+# ── Authentication ──────────────────────────────────────────────────────────
+# Keys only. This is the single most valuable setting in the file: it makes
+# password brute-forcing — the overwhelming majority of what fail2ban would
+# otherwise be catching — structurally impossible.
+ssh_password_authentication: false
+ssh_pubkey_authentication: true
+ssh_permit_empty_passwords: false
+ssh_challenge_response_authentication: false
+ssh_kerberos_authentication: false
+ssh_gssapi_authentication: false
+
+# 'no' forbids root login entirely. 'prohibit-password' would allow root with a
+# key; we do not want that either, because a root login is anonymous — you lose
+# the record of which person did it.
+ssh_permit_root_login: "no"
+
+# ── Access control ──────────────────────────────────────────────────────────
+# Only members of these groups may log in at all. A new account is inert until
+# it joins one, which prevents a service account from ever becoming a login.
+ssh_allow_groups:
+  - sudo
+  - jengasec
+
+ssh_allow_users: []              # leave empty; prefer groups
+ssh_deny_users:
+  - root
+  - daemon
+  - bin
+  - sys
+
+# ── Brute-force resistance ──────────────────────────────────────────────────
+ssh_max_auth_tries: 3            # disconnect after 3 failures
+ssh_max_sessions: 5              # multiplexed sessions per connection
+ssh_max_startups: "10:30:60"     # start dropping unauthenticated connections at 10
+ssh_login_grace_time: 30         # seconds to authenticate before disconnect
+
+# ── Idle sessions ───────────────────────────────────────────────────────────
+# Disconnect after 15 minutes idle (300s x 3). An abandoned root-capable
+# terminal in a shared lab is a real risk, not a theoretical one.
+ssh_client_alive_interval: 300
+ssh_client_alive_count_max: 3
+ssh_tcp_keep_alive: true
+
+# ── Forwarding ──────────────────────────────────────────────────────────────
+# All off by default. Agent forwarding in particular lets whoever controls the
+# server use your key against other machines while you are connected.
+ssh_allow_agent_forwarding: false
+ssh_allow_tcp_forwarding: false
+ssh_x11_forwarding: false
+ssh_permit_tunnel: false
+ssh_gateway_ports: false
+
+# ── Cryptography ────────────────────────────────────────────────────────────
+# Modern algorithms only. Everything with a known weakness is excluded, which
+# also means older clients may fail to connect — that is the intended trade.
+ssh_kex_algorithms:
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - diffie-hellman-group16-sha512
+  - diffie-hellman-group18-sha512
+  - diffie-hellman-group-exchange-sha256
+
+ssh_ciphers:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+  - aes192-ctr
+  - aes128-ctr
+
+ssh_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+  - umac-128-etm@openssh.com
+
+ssh_host_key_algorithms:
+  - ssh-ed25519
+  - rsa-sha2-512
+  - rsa-sha2-256
+
+# Host keys the server presents. Ed25519 first. DSA and ECDSA are omitted.
+ssh_host_keys:
+  - /etc/ssh/ssh_host_ed25519_key
+  - /etc/ssh/ssh_host_rsa_key
+
+# Debian ships a 3072-bit RSA host key and a moduli file containing small DH
+# groups. Regenerating removes the weak ones — worth doing once, at build time.
+ssh_regenerate_host_keys: false
+ssh_min_moduli_size: 3072
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# VERBOSE logs the key fingerprint used for each login. Without it you can see
+# that 'jengasec' logged in but not which key was used — and therefore not which
+# person. fail2ban also needs this level to work reliably.
+ssh_log_level: VERBOSE
+ssh_syslog_facility: AUTH
+
+# ── Banner ──────────────────────────────────────────────────────────────────
+# Shown BEFORE authentication. Some jurisdictions require notice of monitoring
+# for the logs to be usable in a disciplinary or legal process.
+ssh_banner_enabled: true
+ssh_banner_path: /etc/issue.net
+
+# ── Misc hardening ──────────────────────────────────────────────────────────
+ssh_use_pam: true                # needed for account expiry and pam_limits
+ssh_print_motd: false            # PAM prints it; enabling both duplicates it
+ssh_print_last_log: true         # "last login from ..." — you notice a strange one
+ssh_strict_modes: true           # refuse world-writable ~/.ssh
+ssh_ignore_rhosts: true
+ssh_host_based_authentication: false
+ssh_permit_user_environment: false   # or a user sets LD_PRELOAD at login
+ssh_compression: "no"            # pre-auth compression has a bad history
+ssh_accept_env: "LANG LC_*"
+ssh_subsystem_sftp: "internal-sftp"
+
+# ── Validation ──────────────────────────────────────────────────────────────
+# Confirm the port is reachable after reconfiguring, and fail the play if not,
+# while your current session is still open and can fix it.
+ssh_verify_after_change: true

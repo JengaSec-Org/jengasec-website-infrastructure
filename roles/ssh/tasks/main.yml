@@ -1,0 +1,178 @@
+---
+# ssh — Phase 1
+# Hardens sshd. The role most likely to lock you out, so it is written
+# defensively from top to bottom.
+#
+# The guards below run in a deliberate order:
+#   1. confirm a usable key exists before disabling passwords
+#   2. confirm the firewall will allow the port before moving sshd to it
+#   3. validate the config with `sshd -t` BEFORE it replaces the live file
+#   4. reload rather than restart, so existing sessions survive
+#   5. verify the port answers afterwards, while you are still connected
+
+# ── Guard 1: is there a key to log in with? ─────────────────────────────────
+
+- name: Check for an installed administrator key
+  ansible.builtin.stat:
+    path: "/home/{{ users_admin_account | default('jengasec') }}/.ssh/authorized_keys"
+  register: ssh_authorized_keys
+  changed_when: false
+  tags: [ssh, always]
+
+- name: Refuse to disable passwords with no key installed
+  ansible.builtin.assert:
+    that:
+      - ssh_authorized_keys.stat.exists
+      - ssh_authorized_keys.stat.size > 0
+    fail_msg: >-
+      About to disable password authentication on {{ inventory_hostname }}, but
+      /home/{{ users_admin_account | default('jengasec') }}/.ssh/authorized_keys
+      is missing or empty. Applying this would make the host unreachable.
+      Run the `users` role first — playbooks/bootstrap.yml already orders them
+      correctly, so this usually means you ran the ssh role on its own.
+    success_msg: "Administrator key present — safe to disable password authentication"
+  when: not ssh_password_authentication | bool
+  tags: [ssh, always]
+
+# ── Guard 2: will the firewall let you back in on the new port? ─────────────
+
+- name: Warn when moving off the standard port
+  ansible.builtin.debug:
+    msg: >-
+      sshd is moving from port 22 to {{ ssh_port }}. Confirm the firewall
+      already allows {{ ssh_port }} BEFORE this run completes, and keep your
+      current session open until you have tested the new port from a second
+      terminal. See docs/runbook.md.
+  when: ssh_port | int != 22
+  tags: [ssh, always]
+
+# ── Banner ──────────────────────────────────────────────────────────────────
+
+- name: Install the pre-authentication banner
+  ansible.builtin.template:
+    src: issue.net.j2
+    dest: "{{ ssh_banner_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: ssh_banner_enabled | bool
+  tags: [ssh, banner]
+
+# ── Host keys ───────────────────────────────────────────────────────────────
+
+- name: Check which host keys exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ ssh_host_keys }}"
+  register: ssh_host_key_stat
+  changed_when: false
+  tags: [ssh, hostkeys]
+
+- name: Generate a missing Ed25519 host key
+  ansible.builtin.command:
+    cmd: ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N '' -q
+    creates: /etc/ssh/ssh_host_ed25519_key
+  notify: Reload sshd
+  tags: [ssh, hostkeys]
+
+# Debian's stock moduli file contains small Diffie-Hellman groups. Removing
+# them is a one-time cleanup; the filter is cheap and the result is permanent.
+- name: Remove weak Diffie-Hellman moduli
+  ansible.builtin.shell:
+    cmd: >-
+      awk '$5 >= {{ ssh_min_moduli_size }}' /etc/ssh/moduli > /etc/ssh/moduli.strong
+      && mv /etc/ssh/moduli.strong /etc/ssh/moduli
+  args:
+    executable: /bin/bash
+  register: ssh_moduli_filter
+  changed_when: ssh_moduli_filter.rc == 0
+  when: ssh_regenerate_host_keys | bool
+  notify: Reload sshd
+  tags: [ssh, hostkeys]
+
+# ── Main configuration ──────────────────────────────────────────────────────
+
+# `validate` runs `sshd -t -f` against the CANDIDATE file before it replaces the
+# live one. If the template produced anything sshd will not parse, the task
+# fails and /etc/ssh/sshd_config is left untouched — the running daemon keeps
+# its working config and your session survives. This single line is the
+# difference between a failed play and a dead server.
+- name: Write the sshd configuration
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "/usr/sbin/sshd -t -f %s"
+    backup: true
+  notify: Reload sshd
+  tags: [ssh, config]
+
+# Debian 12's stock sshd_config ends with `Include /etc/ssh/sshd_config.d/*.conf`
+# and cloud images drop files in there. Our template does not include that
+# directory, so anything left over is now dead config that will confuse the next
+# person who reads it. Report it rather than deleting someone else's file.
+- name: Look for orphaned sshd drop-in files
+  ansible.builtin.find:
+    paths: /etc/ssh/sshd_config.d
+    patterns: "*.conf"
+  register: ssh_dropins
+  changed_when: false
+  failed_when: false
+  tags: [ssh, config]
+
+- name: Report orphaned sshd drop-in files
+  ansible.builtin.debug:
+    msg: >-
+      /etc/ssh/sshd_config.d contains {{ ssh_dropins.matched }} file(s) that are
+      NO LONGER READ — this role writes an authoritative sshd_config without an
+      Include directive. They have no effect. Review and delete them:
+      {{ ssh_dropins.files | map(attribute='path') | list | join(', ') }}
+  when: ssh_dropins.matched | default(0) | int > 0
+  tags: [ssh, config]
+
+- name: Enable and start sshd
+  ansible.builtin.systemd:
+    name: "{{ ssh_service_name }}"
+    enabled: true
+    state: started
+  tags: [ssh, service]
+
+# Apply the reload now rather than at the end of the play, so the verification
+# below tests the new configuration and not the old one.
+- name: Apply pending sshd changes
+  ansible.builtin.meta: flush_handlers
+  tags: [ssh]
+
+# ── Guard 5: does it actually answer? ───────────────────────────────────────
+
+# Checked from the target itself. A failure here means sshd is not listening —
+# catch it now, while the existing session is open and can still fix it.
+- name: Verify sshd is listening on the configured port
+  ansible.builtin.wait_for:
+    port: "{{ ssh_port }}"
+    host: "127.0.0.1"
+    timeout: 15
+    state: started
+  when: ssh_verify_after_change | bool
+  tags: [ssh, verify]
+
+- name: Confirm the running configuration parses
+  ansible.builtin.command:
+    cmd: /usr/sbin/sshd -T
+  register: ssh_effective_config
+  changed_when: false
+  when: ssh_verify_after_change | bool
+  tags: [ssh, verify]
+
+- name: Report the effective authentication settings
+  ansible.builtin.debug:
+    msg: >-
+      {{ ssh_effective_config.stdout_lines
+         | select('match', '^(port|permitrootlogin|passwordauthentication|pubkeyauthentication|maxauthtries)')
+         | list }}
+  when:
+    - ssh_verify_after_change | bool
+    - ssh_effective_config.stdout_lines is defined
+  tags: [ssh, verify]

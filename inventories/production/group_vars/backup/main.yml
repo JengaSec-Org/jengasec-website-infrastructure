@@ -1,0 +1,42 @@
+---
+# Variables for the `backup` group — backup target (server3).
+# The `backup` role is a Phase 10 stub; these variables define its contract now
+# so the role can be written later without renaming anything.
+
+firewall_rules_group:
+  - port: 873
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "rsync — backup ingest from the other servers"
+
+backup_root: /srv/backup
+backup_retention_daily: 7
+backup_retention_weekly: 4
+backup_retention_monthly: 6
+backup_compression: gzip
+
+# Encryption at rest. A backup of a competition platform contains submissions
+# and judge scores; it should not sit unencrypted on a spare box.
+backup_encrypt: true
+backup_gpg_recipient: "sucybersec@strathmore.edu"    # TODO: replace with a real key ID
+
+# What gets backed up, and from where.
+backup_sources:
+  - name: postgresql
+    host: server2
+    type: pg_dump
+    database: jengasec
+  - name: media
+    host: server1
+    type: rsync
+    path: "{{ app_media_dir }}"
+  - name: config
+    host: server1
+    type: rsync
+    path: /etc
+
+# A backup that has never been restored is a hope, not a backup. When the role
+# is implemented this triggers a monthly automated restore into a scratch
+# database, and alerts if it fails.
+backup_verify_enabled: true
+backup_verify_schedule: "0 3 1 * *"

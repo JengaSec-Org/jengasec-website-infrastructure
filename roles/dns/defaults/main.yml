@@ -1,0 +1,109 @@
+---
+# Defaults for the `dns` role — Phase 2. Bind9.
+#
+# Adding a hostname to the network is an edit to dns_records in
+# group_vars/dns/main.yml. You should never need to open this role to add a
+# record.
+
+dns_packages:
+  - bind9
+  - bind9utils
+  - bind9-doc
+  - dnsutils
+
+dns_service_name: named
+dns_config_dir: /etc/bind
+dns_zone_dir: /var/lib/bind        # Debian's writable zone directory
+
+# ── Resolver behaviour ──────────────────────────────────────────────────────
+# Recursion is offered ONLY to the LAN.
+#
+# An open recursive resolver reachable from the internet is a weapon: a small
+# spoofed query produces a large reply aimed at the victim, so your server
+# becomes the amplifier in someone else's DDoS. It is also how a resolver ends
+# up on public abuse lists. Never widen this to 'any'.
+dns_recursion_enabled: true
+dns_recursion_allowed_from:
+  - localhost
+  - "{{ jengasec_network_cidr | default('10.0.0.0/24') }}"
+
+# Where to send queries for names outside our zone.
+dns_forwarders:
+  - 1.1.1.1
+  - 8.8.8.8
+
+# 'first' tries the forwarders, then falls back to full recursion if they do not
+# answer. 'only' never recurses — pick that if campus policy requires all
+# external queries to leave via approved resolvers.
+dns_forward_policy: first
+
+# Validate DNSSEC on answers we receive. This is cheap and worth having; it is
+# separate from signing our own zone, which we do not do (see below).
+dns_dnssec_validation: auto
+
+# Signing the internal zone is deliberately not implemented. jengasec.local is
+# not delegated from the public root, so there is no chain of trust to validate
+# against — every client would need the key installed manually. It buys nothing
+# here. Revisit if the club moves to a real delegated domain.
+dns_dnssec_sign_zone: false
+
+# ── Zones ───────────────────────────────────────────────────────────────────
+dns_zone: "{{ jengasec_domain | default('jengasec.local') }}"
+dns_zone_ttl: 3600
+dns_zone_refresh: 3600
+dns_zone_retry: 900
+dns_zone_expire: 604800
+dns_zone_negative_ttl: 300
+
+# The '@' in an email address becomes '.' in a SOA record, so
+# admin@jengasec.local is written admin.jengasec.local.
+dns_zone_admin_email: "admin.{{ dns_zone }}"
+dns_zone_primary_ns: "ns1.{{ dns_zone }}"
+
+# Forward records. name is relative to the zone; '@' is the apex.
+dns_records: []
+
+# ── Reverse zone ────────────────────────────────────────────────────────────
+# For 10.0.0.0/24 the reverse zone is 0.0.10.in-addr.arpa — the network octets
+# reversed, without the host part.
+dns_reverse_enabled: true
+dns_reverse_zone: "0.0.10.in-addr.arpa"
+dns_reverse_prefix: "10.0.0"
+dns_reverse_records: []
+
+# ── Zone transfers ──────────────────────────────────────────────────────────
+# Refused by default. An unrestricted AXFR hands an attacker a complete
+# inventory of your network — every hostname, every address, in one query. It is
+# the first thing anyone tries against a nameserver.
+dns_allow_transfer: []
+dns_also_notify: []
+
+# ── Query access ────────────────────────────────────────────────────────────
+dns_allow_query:
+  - localhost
+  - "{{ jengasec_network_cidr | default('10.0.0.0/24') }}"
+
+# ── Listening ───────────────────────────────────────────────────────────────
+dns_listen_on:
+  - 127.0.0.1
+  - "{{ ansible_default_ipv4.address | default('10.0.0.12') }}"
+dns_listen_on_v6: none
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# Query logging is off by default: it is one line per query, and on a busy
+# network that is a lot of disk. Turn it on temporarily when debugging, or
+# permanently if the club wants the DNS data for its own analysis — it is
+# genuinely interesting traffic to look at.
+dns_query_logging: false
+dns_log_dir: /var/log/named
+
+# ── Version hiding ──────────────────────────────────────────────────────────
+# Stops `dig @server chaos txt version.bind` returning the exact BIND version.
+# Minor, but free.
+dns_hide_version: true
+
+# ── Rate limiting ───────────────────────────────────────────────────────────
+# Response rate limiting caps identical answers to the same subnet per second,
+# which blunts amplification attempts that get past the recursion ACL.
+dns_rate_limit_enabled: true
+dns_rate_limit_responses_per_second: 15

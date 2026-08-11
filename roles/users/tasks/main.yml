@@ -1,0 +1,206 @@
+---
+# users — Phase 1
+# Service accounts, groups, SSH keys, and sudo policy.
+#
+# ORDER MATTERS. This role must run before `ssh`, which disables password
+# authentication. Install the keys first, or the next connection fails.
+
+# ── Guard ───────────────────────────────────────────────────────────────────
+# Creating an administrator account with no key and no password, and then
+# handing the host to the ssh role, produces a machine nobody can log into. Stop
+# here instead, while the current session is still open.
+- name: Assert an administrator key is available before locking the host down
+  ansible.builtin.assert:
+    that:
+      - users_admin_ssh_keys | length > 0
+    fail_msg: >-
+      users_admin_ssh_keys is empty. The `ssh` role disables password
+      authentication, so applying it after this would leave
+      {{ inventory_hostname }} with no way in.
+      Put your public key in files/{{ users_ssh_key_dir }}/ and list the
+      filename in group_vars. See roles/users/README.md.
+    success_msg: "{{ users_admin_ssh_keys | length }} administrator key(s) to install"
+  when: users_lock_passwords | bool
+  tags: [users, always]
+
+# ── Groups ──────────────────────────────────────────────────────────────────
+
+- name: Create groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    system: "{{ item.system | default(false) }}"
+    state: present
+  loop: "{{ users_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [users, groups]
+
+# ── Accounts ────────────────────────────────────────────────────────────────
+
+- name: Create service accounts
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    comment: "{{ item.comment | default('') }}"
+    groups: "{{ item.groups | default([]) | join(',') }}"
+    append: true
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    system: "{{ item.system | default(false) }}"
+    create_home: "{{ users_create_home | bool }}"
+    home: "{{ item.home | default('/home/' + item.name) }}"
+    password: "{{ item.password_hash | default(omit) }}"
+    state: present
+  loop: "{{ users_service_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [users, accounts]
+
+# Locking sets '!' in front of the password hash. Key-based login and sudo are
+# unaffected; only password authentication stops working. Accounts that define
+# their own password_hash are skipped — those exist precisely so someone can log
+# in at the console when SSH is down.
+- name: Lock passwords on key-only accounts
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    password_lock: true
+  loop: "{{ users_service_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - users_lock_passwords | bool
+    - item.password_hash is not defined
+  tags: [users, accounts]
+
+- name: Set password ageing
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    password_expire_max: "{{ users_password_ageing.max_days }}"
+    password_expire_min: "{{ users_password_ageing.min_days }}"
+    password_expire_warn: "{{ users_password_ageing.warn_age }}"
+  loop: "{{ users_service_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - item.password_hash is defined
+    - not (item.system | default(false))
+  tags: [users, accounts]
+
+- name: Restrict home directory permissions
+  ansible.builtin.file:
+    path: "{{ item.home | default('/home/' + item.name) }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "{{ users_home_mode }}"
+  loop: "{{ users_service_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: users_create_home | bool
+  tags: [users, accounts]
+
+# ── SSH keys ────────────────────────────────────────────────────────────────
+
+- name: Install administrator SSH keys
+  ansible.posix.authorized_key:
+    user: "{{ users_admin_account }}"
+    key: "{{ lookup('ansible.builtin.file', users_ssh_key_dir + '/' + item) }}"
+    state: present
+    exclusive: false
+    manage_dir: true
+  loop: "{{ users_admin_ssh_keys }}"
+  loop_control:
+    label: "{{ users_admin_account }} <- {{ item }}"
+  tags: [users, ssh-keys]
+
+- name: Install per-account SSH keys
+  ansible.posix.authorized_key:
+    user: "{{ item.0.name }}"
+    key: "{{ lookup('ansible.builtin.file', users_ssh_key_dir + '/' + item.1) }}"
+    state: present
+    exclusive: false
+    manage_dir: true
+  loop: "{{ users_service_accounts | subelements('ssh_keys', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} <- {{ item.1 }}"
+  tags: [users, ssh-keys]
+
+# `exclusive` replaces the whole authorized_keys file, so every key has to be
+# passed in one call — a loop would leave only the last one. This builds the
+# authoritative block first, then applies it once.
+- name: Assemble the authoritative administrator key list
+  ansible.builtin.set_fact:
+    users_admin_key_block: |-
+      {% for key_file in users_admin_ssh_keys %}
+      {{ lookup('ansible.builtin.file', users_ssh_key_dir + '/' + key_file) }}
+      {% endfor %}
+  when: users_ssh_exclusive | bool
+  tags: [users, ssh-keys]
+
+# Removes any key not defined in this repository — including one added by hand.
+# Off by default: enabling it before every teammate's key is committed locks
+# them out. See users_ssh_exclusive in defaults/main.yml.
+- name: Enforce exclusive key ownership
+  ansible.posix.authorized_key:
+    user: "{{ users_admin_account }}"
+    key: "{{ users_admin_key_block }}"
+    exclusive: true
+    manage_dir: true
+  when: users_ssh_exclusive | bool
+  tags: [users, ssh-keys]
+
+# ── Sudo ────────────────────────────────────────────────────────────────────
+
+- name: Ensure the sudoers include directory exists
+  ansible.builtin.file:
+    path: "{{ users_sudoers_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [users, sudo]
+
+# validate: runs visudo against the candidate file BEFORE it is moved into
+# place. A syntax error in sudoers means nobody can become root, on a machine
+# you may only be able to reach over SSH. This is the guard that prevents it.
+- name: Write per-account sudo policy
+  ansible.builtin.template:
+    src: sudoers-account.j2
+    dest: "{{ users_sudoers_dir }}/50-{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ users_service_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.sudo_nopasswd | default(false) or item.sudo_commands is defined
+  tags: [users, sudo]
+
+- name: Configure sudo logging and defaults
+  ansible.builtin.template:
+    src: sudoers-defaults.j2
+    dest: "{{ users_sudoers_dir }}/10-jengasec-defaults"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  tags: [users, sudo]
+
+# ── Removal ─────────────────────────────────────────────────────────────────
+
+- name: Remove decommissioned accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: false        # keep the home directory for review
+    force: false
+  loop: "{{ users_absent }}"
+  when: users_absent | length > 0
+  tags: [users, accounts]
+
+- name: Remove sudo policy for decommissioned accounts
+  ansible.builtin.file:
+    path: "{{ users_sudoers_dir }}/50-{{ item }}"
+    state: absent
+  loop: "{{ users_absent }}"
+  when: users_absent | length > 0
+  tags: [users, sudo]

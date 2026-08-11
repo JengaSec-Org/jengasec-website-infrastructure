@@ -1,0 +1,22 @@
+---
+# Phase 7 — Application deployment
+#
+# STATUS: stub. See roles/deployment/README.md.
+#
+# Distinct from platform.yml: that one BUILDS the platform (installs nginx,
+# creates the virtualenv, writes the units). This one ships a new revision onto
+# a platform that already exists — pull, migrate, collectstatic, reload, health
+# check, roll back if the check fails.
+#
+# Once implemented this is the playbook that runs most often, so it is the one
+# that most needs to be boring and reversible.
+
+- name: "Phase 7 — deploy the application"
+  hosts: web
+  become: true
+  gather_facts: true
+  serial: 1        # one host at a time, so a bad release cannot take out both
+
+  roles:
+    - role: deployment
+      tags: [deployment, deploy]

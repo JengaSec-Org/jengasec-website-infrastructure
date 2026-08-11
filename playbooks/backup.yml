@@ -1,0 +1,21 @@
+---
+# Phase 10 — Backup and disaster recovery
+#
+# STATUS: stub. See roles/backup/README.md.
+#
+# The one thing worth saying now: a backup that has never been restored is a
+# hope, not a backup. `backup_verify_enabled` in group_vars/backup exists so
+# that restore verification is part of the role from the start rather than
+# something added after the first time it is needed.
+
+- name: "Phase 10 — backup"
+  hosts: backup
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: backup
+      tags: [backup]
+
+    - role: cron
+      tags: [cron]

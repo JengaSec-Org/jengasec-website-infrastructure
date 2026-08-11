@@ -1,0 +1,15 @@
+---
+# Handlers for the `dns` role.
+
+# `reload` re-reads the zones without dropping the cache or the listening
+# socket. A restart throws away a warm cache, so every client's next query goes
+# all the way upstream — noticeable across a whole LAN for no benefit.
+#
+# The configuration and every zone are validated with named-checkconf and
+# named-checkzone before this runs, so a reload here cannot be handed a broken
+# zone.
+- name: Reload named
+  ansible.builtin.systemd:
+    name: "{{ dns_service_name }}"
+    state: reloaded
+  listen: "reload named"

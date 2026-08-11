@@ -1,0 +1,39 @@
+---
+# server1 — web host. nginx + gunicorn + Django. 8 GB RAM.
+#
+# Everything below is machine-specific. Nothing here belongs in group_vars,
+# because no other server shares these values.
+
+# ── Identity ────────────────────────────────────────────────────────────────
+inventory_hostname_short: server1
+common_hostname: "server1.{{ jengasec_domain }}"
+host_role_description: "Web — nginx, gunicorn, Django"
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# Consumed by roles/networking/templates/interfaces.j2.
+#
+# Confirm the interface name on the box BEFORE running the networking role —
+# Debian 12 uses predictable names (ens18, enp0s3, eno1), rarely eth0:
+#     ip -brief link show
+networking_interface: eth0               # TODO: replace
+networking_address: 10.0.0.11            # TODO: replace
+networking_netmask: 255.255.255.0        # TODO: replace
+networking_gateway: "{{ jengasec_network_gateway }}"
+networking_dns_servers:
+  - 10.0.0.12                            # TODO: replace — server2 runs Bind9
+  - 1.1.1.1
+networking_dns_search: "{{ jengasec_domain }}"
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+# 8 GB of RAM, so a modest swap file is enough insurance against the AI
+# evaluation queue spiking during judging.
+os_swap_enabled: true
+os_swap_size_mb: 2048
+
+# ── Certificates ────────────────────────────────────────────────────────────
+# The hostnames this server presents a TLS certificate for.
+certificates_common_name: "platform.{{ jengasec_domain }}"
+certificates_subject_alt_names:
+  - "DNS:platform.{{ jengasec_domain }}"
+  - "DNS:server1.{{ jengasec_domain }}"
+  - "IP:10.0.0.11"                       # TODO: replace

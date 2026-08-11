@@ -1,0 +1,15 @@
+---
+# Defaults for the `cron` role — Phase 7.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+cron_enabled: false
+
+# list of dicts: name, minute, hour, user, job
+cron_jobs: []
+# failures must reach a human
+cron_mailto: "sucybersec@strathmore.edu"
+cron_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

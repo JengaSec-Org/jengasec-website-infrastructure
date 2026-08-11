@@ -1,0 +1,249 @@
+---
+# certificates — internal CA provider.
+#
+# Creates a private certificate authority and issues a certificate for this
+# host from it. This is the right choice for jengasec.local: a .local domain is
+# not delegated from the public root, so no public CA will ever issue for it.
+#
+# The CA lives on ONE host (the first in the `infra` group) and its certificate
+# is distributed to the others. The CA private key never leaves that machine.
+
+- name: Identify the CA host
+  ansible.builtin.set_fact:
+    certificates_ca_host: "{{ groups['infra'] | first }}"
+  tags: [certificates, ca]
+
+- name: Refuse to build a CA without a passphrase
+  ansible.builtin.assert:
+    that:
+      - certificates_ca_passphrase | length > 0
+    fail_msg: >-
+      vault_ca_passphrase is not set. An unprotected CA private key lets anyone
+      who gets a shell on {{ certificates_ca_host }} issue a valid certificate
+      for any name in the network — including the platform's. Add
+      vault_ca_passphrase to your vault. See docs/secrets.md.
+    success_msg: "CA passphrase available"
+  tags: [certificates, ca]
+
+# ── The CA itself, on the CA host only ──────────────────────────────────────
+
+- name: Generate the CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ certificates_ca_dir }}/jengasec-ca.key"
+    size: "{{ certificates_key_size }}"
+    type: "{{ certificates_key_type }}"
+    passphrase: "{{ certificates_ca_passphrase }}"
+    cipher: auto
+    owner: root
+    group: root
+    mode: "0400"
+    backup: true
+  when: inventory_hostname == certificates_ca_host
+  no_log: true
+  tags: [certificates, ca]
+
+- name: Create the CA certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ certificates_ca_dir }}/jengasec-ca.csr"
+    privatekey_path: "{{ certificates_ca_dir }}/jengasec-ca.key"
+    privatekey_passphrase: "{{ certificates_ca_passphrase }}"
+    common_name: "{{ certificates_ca_common_name }}"
+    country_name: "{{ certificates_country }}"
+    state_or_province_name: "{{ certificates_state }}"
+    locality_name: "{{ certificates_locality }}"
+    organization_name: "{{ certificates_organization }}"
+    organizational_unit_name: "{{ certificates_organizational_unit }}"
+    email_address: "{{ certificates_email }}"
+    # basic_constraints marks this as a CA. path_length:0 means it may sign
+    # end-entity certificates but not further CAs — so a stolen intermediate
+    # cannot be used to build a signing hierarchy of its own.
+    basic_constraints:
+      - "CA:TRUE"
+      - "pathlen:0"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+      - digitalSignature
+    key_usage_critical: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == certificates_ca_host
+  tags: [certificates, ca]
+
+- name: Self-sign the CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ certificates_ca_dir }}/jengasec-ca.crt"
+    csr_path: "{{ certificates_ca_dir }}/jengasec-ca.csr"
+    privatekey_path: "{{ certificates_ca_dir }}/jengasec-ca.key"
+    privatekey_passphrase: "{{ certificates_ca_passphrase }}"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ certificates_ca_valid_days }}d"
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == certificates_ca_host
+  tags: [certificates, ca]
+
+# ── Distribute the CA certificate ───────────────────────────────────────────
+# The public certificate travels to every host; the private key does not.
+
+- name: Fetch the CA certificate to the control node
+  ansible.builtin.fetch:
+    src: "{{ certificates_ca_dir }}/jengasec-ca.crt"
+    dest: "/tmp/jengasec-ca.crt"
+    flat: true
+  when: inventory_hostname == certificates_ca_host
+  tags: [certificates, ca, trust]
+
+- name: Distribute the CA certificate
+  ansible.builtin.copy:
+    src: "/tmp/jengasec-ca.crt"
+    dest: "{{ certificates_ca_dir }}/jengasec-ca.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname != certificates_ca_host
+  tags: [certificates, ca, trust]
+
+# Once here, curl, python-requests, and psql all accept internally issued
+# certificates without --insecure. Django connecting to PostgreSQL with
+# sslmode=verify-full depends on this.
+- name: Install the CA into the system trust store
+  ansible.builtin.copy:
+    src: "{{ certificates_ca_dir }}/jengasec-ca.crt"
+    dest: /usr/local/share/ca-certificates/jengasec-ca.crt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: certificates_install_ca_trust | bool
+  notify: Update CA trust
+  tags: [certificates, trust]
+
+# ── Host certificate ────────────────────────────────────────────────────────
+
+- name: Generate the host private key
+  community.crypto.openssl_privatekey:
+    path: "{{ certificates_private_dir }}/{{ inventory_hostname }}.key"
+    size: "{{ certificates_key_size }}"
+    type: "{{ certificates_key_type }}"
+    owner: root
+    group: root
+    mode: "0400"
+  tags: [certificates, host]
+
+- name: Create the host certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ certificates_dir }}/{{ inventory_hostname }}.csr"
+    privatekey_path: "{{ certificates_private_dir }}/{{ inventory_hostname }}.key"
+    common_name: "{{ certificates_common_name }}"
+    country_name: "{{ certificates_country }}"
+    state_or_province_name: "{{ certificates_state }}"
+    locality_name: "{{ certificates_locality }}"
+    organization_name: "{{ certificates_organization }}"
+    organizational_unit_name: "{{ certificates_organizational_unit }}"
+    # Modern clients ignore the common name entirely and validate against SANs.
+    # A certificate with no SAN is rejected by every current browser, whatever
+    # its CN says.
+    subject_alt_name: "{{ certificates_subject_alt_names }}"
+    basic_constraints:
+      - "CA:FALSE"
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    extended_key_usage:
+      - serverAuth
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [certificates, host]
+
+- name: Fetch the CSR to the control node for signing
+  ansible.builtin.fetch:
+    src: "{{ certificates_dir }}/{{ inventory_hostname }}.csr"
+    dest: "/tmp/{{ inventory_hostname }}.csr"
+    flat: true
+  tags: [certificates, host]
+
+# Signed on the CA host, because that is the only machine holding the CA key.
+- name: Copy the CSR to the CA host
+  ansible.builtin.copy:
+    src: "/tmp/{{ inventory_hostname }}.csr"
+    dest: "/tmp/{{ inventory_hostname }}.csr"
+    owner: root
+    group: root
+    mode: "0644"
+  delegate_to: "{{ certificates_ca_host }}"
+  tags: [certificates, host]
+
+- name: Sign the host certificate with the CA
+  community.crypto.x509_certificate:
+    path: "/tmp/{{ inventory_hostname }}.crt"
+    csr_path: "/tmp/{{ inventory_hostname }}.csr"
+    ownca_path: "{{ certificates_ca_dir }}/jengasec-ca.crt"
+    ownca_privatekey_path: "{{ certificates_ca_dir }}/jengasec-ca.key"
+    ownca_privatekey_passphrase: "{{ certificates_ca_passphrase }}"
+    provider: ownca
+    ownca_not_after: "+{{ certificates_valid_days }}d"
+    owner: root
+    group: root
+    mode: "0644"
+  delegate_to: "{{ certificates_ca_host }}"
+  tags: [certificates, host]
+
+- name: Retrieve the signed certificate
+  ansible.builtin.fetch:
+    src: "/tmp/{{ inventory_hostname }}.crt"
+    dest: "/tmp/{{ inventory_hostname }}.crt"
+    flat: true
+  delegate_to: "{{ certificates_ca_host }}"
+  tags: [certificates, host]
+
+- name: Install the signed certificate
+  ansible.builtin.copy:
+    src: "/tmp/{{ inventory_hostname }}.crt"
+    dest: "{{ certificates_dir }}/{{ inventory_hostname }}.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [certificates, host]
+
+# nginx wants the host certificate and the issuing CA in one file, in that
+# order. Serving the leaf alone produces "unable to get local issuer
+# certificate" on any client that does not already have the CA.
+- name: Build the certificate chain
+  ansible.builtin.shell:
+    cmd: >-
+      cat {{ certificates_dir }}/{{ inventory_hostname }}.crt
+          {{ certificates_ca_dir }}/jengasec-ca.crt
+      > {{ certificates_dir }}/{{ inventory_hostname }}-fullchain.crt
+  args:
+    executable: /bin/bash
+  changed_when: true
+  tags: [certificates, host]
+
+- name: Secure the certificate chain
+  ansible.builtin.file:
+    path: "{{ certificates_dir }}/{{ inventory_hostname }}-fullchain.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [certificates, host]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Read back the issued certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ certificates_dir }}/{{ inventory_hostname }}.crt"
+  register: certificates_info
+  tags: [certificates, verify]
+
+- name: Report the certificate details
+  ansible.builtin.debug:
+    msg: >-
+      {{ certificates_common_name }} — valid until
+      {{ certificates_info.not_after }}, SANs:
+      {{ certificates_info.subject_alt_name | default([]) | join(', ') }}
+  tags: [certificates, verify]

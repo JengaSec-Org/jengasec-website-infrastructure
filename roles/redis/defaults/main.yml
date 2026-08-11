@@ -1,0 +1,21 @@
+---
+# Defaults for the `redis` role — Phase 4.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+redis_enabled: false
+
+# widen only for a remote application host
+redis_bind: "127.0.0.1"
+redis_port: 6379
+# hard cap; Redis must not starve PostgreSQL
+redis_maxmemory: "256mb"
+# cache semantics, evict coldest keys
+redis_maxmemory_policy: allkeys-lru
+# a cache does not need durability
+redis_appendonly: false
+redis_databases: 16
+redis_requirepass: "{{ vault_redis_password }}"

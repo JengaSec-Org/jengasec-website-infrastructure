@@ -1,0 +1,69 @@
+# {{ common_managed_banner }}
+#
+# Site-wide sudo defaults. Loaded before the per-account files because
+# sudoers.d is read in lexical order and this file is prefixed 10-.
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# Every sudo invocation goes to its own file as well as the journal. A separate
+# file survives journal rotation and is straightforward to hand to whoever
+# reviews an incident — "what did anyone run as root last Tuesday" should be one
+# grep, not an archaeology project.
+Defaults logfile="{{ users_sudo_logfile }}"
+
+# Record the hostname and year in each log line.
+Defaults log_host, log_year
+{% if users_sudo_io_logging %}
+
+# Full session capture — every keystroke and all output, replayable with
+# `sudoreplay`. Excellent for a forensics exercise, but it writes a lot: a busy
+# session can produce megabytes, and these servers have small disks. Keep an eye
+# on /var/log/sudo-io if you leave this on.
+Defaults log_input, log_output
+Defaults!/usr/bin/sudoreplay !log_output
+Defaults iolog_dir="/var/log/sudo-io/%{user}"
+{% endif %}
+
+# ── Session behaviour ───────────────────────────────────────────────────────
+# Re-prompt for the password after 5 minutes. Debian's default is 15, which is
+# long enough for an unattended terminal to become someone else's root shell.
+Defaults timestamp_timeout=5
+
+# The sudo timestamp applies per terminal, not to every session the user has
+# open. Authenticating in one window should not silently authorise another.
+Defaults timestamp_type=tty
+
+# NOTE: `Defaults requiretty` is deliberately NOT set.
+#
+# It is a common hardening recommendation, and it would break this repository:
+# Ansible runs with pipelining enabled (see ansible.cfg), which executes tasks
+# over a non-interactive SSH channel with no TTY attached. Turning requiretty on
+# makes every become: true task fail with "sudo: sorry, you must have a tty".
+# Debian ships without it for exactly this reason. Leave it off.
+{% if not users_sudo_requires_password %}
+
+# NOTE: users_sudo_requires_password is false. Accounts may sudo without a
+# password. This is only appropriate for automation accounts with an explicit
+# command list.
+{% endif %}
+
+# ── Environment ─────────────────────────────────────────────────────────────
+# Reset the environment. Passing the caller's variables into a root process is
+# how LD_PRELOAD and PYTHONPATH attacks work.
+Defaults env_reset
+Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Keep only what is needed for a usable session.
+Defaults env_keep += "LANG LC_ALL LANGUAGE"
+Defaults env_keep += "EDITOR VISUAL"
+
+# ── Feedback ────────────────────────────────────────────────────────────────
+# Show asterisks while typing the password — otherwise people assume the
+# terminal has frozen.
+Defaults pwfeedback
+
+# A short reminder on first use.
+Defaults lecture="once"
+
+# Send failed attempts somewhere a human will see them.
+Defaults mail_badpass
+Defaults mailto="{{ cron_mailto | default('root') }}"

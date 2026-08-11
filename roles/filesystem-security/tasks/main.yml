@@ -1,0 +1,222 @@
+---
+# filesystem-security — Phase 3
+# Ownership, permissions, ACLs, and the scans that surface what drifted.
+
+- name: Install ACL tooling
+  ansible.builtin.apt:
+    name: acl
+    state: present
+  tags: [filesystem-security, packages]
+
+# ── Critical files (CIS 6.1) ────────────────────────────────────────────────
+
+# Debian ships these correctly; they drift when someone debugging at 2am runs
+# chmod 777 and forgets. Re-asserting them every run is exactly what automation
+# is for.
+- name: Enforce permissions on critical files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+    state: file
+  loop: "{{ filesystem_security_critical_files }}"
+  loop_control:
+    label: "{{ item.path }} -> {{ item.mode }}"
+  failed_when: false      # the backup files (/etc/passwd-) may not exist
+  tags: [filesystem-security, permissions]
+
+# ── Cron ────────────────────────────────────────────────────────────────────
+
+# A writable cron directory is a scheduled root shell for whoever can write to
+# it — among the cleanest persistence mechanisms available.
+- name: Restrict the cron directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+    state: directory
+  loop: "{{ filesystem_security_cron_dirs }}"
+  failed_when: false
+  tags: [filesystem-security, cron]
+
+- name: Restrict crontab itself
+  ansible.builtin.file:
+    path: /etc/crontab
+    owner: root
+    group: root
+    mode: "0600"
+  failed_when: false
+  tags: [filesystem-security, cron]
+
+# cron.allow with no cron.deny means ONLY the listed users may schedule jobs.
+# The deny file must be removed, or its presence changes the semantics.
+- name: Write cron.allow and at.allow
+  ansible.builtin.template:
+    src: cron.allow.j2
+    dest: "/etc/{{ item }}.allow"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - cron
+    - at
+  when: filesystem_security_restrict_cron | bool
+  tags: [filesystem-security, cron]
+
+- name: Remove the deny files
+  ansible.builtin.file:
+    path: "/etc/{{ item }}.deny"
+    state: absent
+  loop:
+    - cron
+    - at
+  when: filesystem_security_restrict_cron | bool
+  tags: [filesystem-security, cron]
+
+# ── Default umask ───────────────────────────────────────────────────────────
+
+# Set in two places because they cover different sessions: login.defs governs
+# login shells, /etc/profile.d covers interactive shells generally. Setting only
+# one leaves a gap that is tedious to find.
+- name: Set the default umask for shells
+  ansible.builtin.copy:
+    content: |
+      # {{ common_managed_banner }}
+      # 027 — owner rwx, group rx, others nothing.
+      # The Debian default of 022 makes every new file world-readable, which is
+      # the wrong default on a server holding competition submissions.
+      umask {{ filesystem_security_umask }}
+    dest: /etc/profile.d/00-jengasec-umask.sh
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [filesystem-security, umask]
+
+# ── Application directories ─────────────────────────────────────────────────
+
+- name: Create and secure the application directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+    state: directory
+  loop: "{{ filesystem_security_app_dirs }}"
+  loop_control:
+    label: "{{ item.path }} -> {{ item.mode }}"
+  when: filesystem_security_manage_app_dirs | bool
+  tags: [filesystem-security, application]
+
+# ── ACLs ────────────────────────────────────────────────────────────────────
+
+# The deploy account needs write access to the application tree without owning
+# it. Finer than adding it to the app group, and reversible.
+#
+# `default: true` sets the DEFAULT ACL so files created later inherit it —
+# without that, the ACL applies to what exists today and every subsequent
+# `git pull` produces files deploy cannot touch.
+- name: Apply ACLs
+  ansible.posix.acl:
+    path: "{{ item.path }}"
+    entity: "{{ item.entity }}"
+    etype: "{{ item.etype }}"
+    permissions: "{{ item.permissions }}"
+    state: present
+    recursive: "{{ item.recursive | default(false) }}"
+    default: "{{ item.default | default(true) }}"
+  loop: "{{ filesystem_security_acls }}"
+  loop_control:
+    label: "{{ item.entity }} {{ item.permissions }} on {{ item.path }}"
+  when:
+    - filesystem_security_acls_enabled | bool
+    - filesystem_security_manage_app_dirs | bool
+  failed_when: false      # the target directory may not exist before deployment
+  tags: [filesystem-security, acl]
+
+# ── Scans ───────────────────────────────────────────────────────────────────
+#
+# These REPORT rather than fix. A world-writable file is usually a mistake and
+# occasionally load-bearing; deleting one automatically would be worse than the
+# problem it solves. Surfacing it is the useful part.
+
+- name: Scan for world-writable files
+  ansible.builtin.shell:
+    cmd: >-
+      find / -xdev -type f -perm -0002
+      {% for path in filesystem_security_scan_exclude %}-not -path "{{ path }}/*" {% endfor %}
+      2>/dev/null | head -50
+  args:
+    executable: /bin/bash
+  register: fs_world_writable
+  changed_when: false
+  failed_when: false
+  when: filesystem_security_scan_world_writable | bool
+  tags: [filesystem-security, scan]
+
+- name: Report world-writable files
+  ansible.builtin.debug:
+    msg: >-
+      WORLD-WRITABLE FILES on {{ inventory_hostname }} — any local account can
+      modify these: {{ fs_world_writable.stdout_lines | join(', ') }}
+  when:
+    - filesystem_security_scan_world_writable | bool
+    - fs_world_writable.stdout | default('') | trim | length > 0
+  tags: [filesystem-security, scan]
+
+- name: Scan for unowned files
+  ansible.builtin.shell:
+    cmd: >-
+      find / -xdev \( -nouser -o -nogroup \)
+      {% for path in filesystem_security_scan_exclude %}-not -path "{{ path }}/*" {% endfor %}
+      2>/dev/null | head -50
+  args:
+    executable: /bin/bash
+  register: fs_unowned
+  changed_when: false
+  failed_when: false
+  when: filesystem_security_scan_unowned | bool
+  tags: [filesystem-security, scan]
+
+# Unowned files are left behind when an account is deleted. They matter because
+# UIDs get reused: the next account created can silently inherit the previous
+# owner's data.
+- name: Report unowned files
+  ansible.builtin.debug:
+    msg: >-
+      UNOWNED FILES on {{ inventory_hostname }} — left by a deleted account. A
+      new account reusing that UID would inherit them:
+      {{ fs_unowned.stdout_lines | join(', ') }}
+  when:
+    - filesystem_security_scan_unowned | bool
+    - fs_unowned.stdout | default('') | trim | length > 0
+  tags: [filesystem-security, scan]
+
+- name: Scan for setuid and setgid binaries
+  ansible.builtin.shell:
+    cmd: >-
+      find / -xdev -type f \( -perm -4000 -o -perm -2000 \)
+      {% for path in filesystem_security_scan_exclude %}-not -path "{{ path }}/*" {% endfor %}
+      2>/dev/null | sort
+  args:
+    executable: /bin/bash
+  register: fs_suid
+  changed_when: false
+  failed_when: false
+  when: filesystem_security_scan_suid | bool
+  tags: [filesystem-security, scan]
+
+# There should be a known, stable set of these — sudo, su, passwd, mount and a
+# handful of others. The value is not the list itself but the DIFF: a new entry
+# appearing between two runs is a strong signal, which is why this runs every
+# play rather than once at build time.
+- name: Report the setuid and setgid inventory
+  ansible.builtin.debug:
+    msg: >-
+      {{ fs_suid.stdout_lines | default([]) | length }} setuid/setgid binaries
+      on {{ inventory_hostname }}. Compare against the previous run — a NEW
+      entry is worth investigating immediately. Current:
+      {{ fs_suid.stdout_lines | default([]) | join(', ') }}
+  when: filesystem_security_scan_suid | bool
+  tags: [filesystem-security, scan]

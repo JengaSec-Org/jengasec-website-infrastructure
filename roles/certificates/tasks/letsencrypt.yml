@@ -1,0 +1,100 @@
+---
+# certificates — Let's Encrypt provider.
+#
+# Requires a PUBLICLY RESOLVABLE domain. jengasec.local is not one — .local is
+# reserved for mDNS and no public CA will ever issue for it. These tasks do
+# nothing useful until the club has a real domain delegated to it.
+#
+# Two validation methods:
+#   http-01  needs inbound port 80 from the internet (what this file does)
+#   dns-01   needs API access to the DNS provider — see the cloudflare role
+#
+# On a campus network that does not allow inbound 80, use dns-01 or the
+# cloudflare_origin provider instead.
+
+- name: Refuse to proceed without public domains
+  ansible.builtin.assert:
+    that:
+      - certificates_letsencrypt_domains | length > 0
+      - not (certificates_letsencrypt_domains | select('search', '\.local$') | list | length > 0)
+    fail_msg: >-
+      certificates_letsencrypt_domains is empty, or contains a .local name.
+      Let's Encrypt only issues for publicly resolvable domains — .local is
+      reserved for mDNS and can never be validated. Use
+      certificates_provider: internal_ca for jengasec.local.
+    success_msg: "Requesting certificates for {{ certificates_letsencrypt_domains | join(', ') }}"
+  tags: [certificates, letsencrypt]
+
+- name: Install certbot
+  ansible.builtin.apt:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+  tags: [certificates, letsencrypt, packages]
+
+- name: Ensure the webroot exists
+  ansible.builtin.file:
+    path: "{{ certificates_letsencrypt_webroot }}/.well-known/acme-challenge"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+  tags: [certificates, letsencrypt]
+
+# --staging until a real certificate is issued successfully.
+#
+# The production endpoint rate-limits failed authorisations hard: five failures
+# per account per hostname per hour, and 50 certificates per domain per week.
+# Debugging against production locks you out for a week and there is no appeal.
+- name: Request the certificate
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot
+      --webroot-path {{ certificates_letsencrypt_webroot }}
+      --email {{ certificates_letsencrypt_email }}
+      --agree-tos --non-interactive --keep-until-expiring
+      {% if certificates_letsencrypt_staging %}--staging{% endif %}
+      {% for domain in certificates_letsencrypt_domains %}-d {{ domain }} {% endfor %}
+    creates: "/etc/letsencrypt/live/{{ certificates_letsencrypt_domains | first }}/fullchain.pem"
+  tags: [certificates, letsencrypt]
+
+# certbot installs its own systemd timer on Debian, so no cron job is needed.
+# The deploy hook is what actually matters: without it the certificate renews
+# on disk and nginx keeps serving the old one until someone reloads it by hand,
+# usually about a month after it expired.
+- name: Install the renewal deploy hook
+  ansible.builtin.copy:
+    content: |
+      #!/bin/sh
+      # {{ common_managed_banner }}
+      # Reload services after a successful renewal. Without this, the new
+      # certificate sits on disk while nginx serves the expired one.
+      systemctl reload nginx 2>/dev/null || true
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-services.sh
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [certificates, letsencrypt]
+
+- name: Ensure the renewal timer is active
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started
+  tags: [certificates, letsencrypt]
+
+- name: Test renewal without issuing
+  ansible.builtin.command:
+    cmd: certbot renew --dry-run
+  register: certificates_renew_test
+  changed_when: false
+  failed_when: false
+  tags: [certificates, letsencrypt, verify]
+
+- name: Report the renewal test
+  ansible.builtin.debug:
+    msg: >-
+      Renewal dry run
+      {{ 'passed' if certificates_renew_test.rc == 0 else 'FAILED — renewal will not work unattended' }}
+  tags: [certificates, letsencrypt, verify]

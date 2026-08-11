@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: firewall
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: UFW firewall with a data-driven ruleset and lockout protection.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - firewall
+    - security
+
+dependencies: []

@@ -1,0 +1,122 @@
+---
+# Development variables — safe, self-contained, no vault required.
+#
+# Every value here is a placeholder chosen so that `--check` runs complete. The
+# secrets are deliberately obvious fakes: if one of these ever appears on a real
+# server, something has gone badly wrong and you want it to be visible.
+
+jengasec_environment: development
+jengasec_domain: dev.jengasec.local
+jengasec_network_cidr: "127.0.0.0/8"
+jengasec_network_gateway: "127.0.0.1"
+
+common_timezone: "Africa/Nairobi"
+common_locale: "en_US.UTF-8"
+common_hostname: "dev.jengasec.local"
+common_managed_banner: >-
+  Managed by Ansible — jengasec-infrastructure (DEVELOPMENT / CHECK MODE).
+
+host_role_description: "Development check-mode target"
+
+ssh_port: 22
+ssh_allow_groups: [sudo, jengasec]
+
+users_service_accounts:
+  - name: jengasec
+    comment: "JengaSec administrator"
+    groups: [sudo]
+    shell: /bin/bash
+    system: false
+    sudo_nopasswd: false
+
+# Empty so a check run does not require a real key file to exist.
+users_admin_ssh_keys: []
+
+firewall_rules_common:
+  - port: "{{ ssh_port }}"
+    proto: tcp
+    from: any
+    comment: "SSH"
+
+# ── Network (fake, but structurally complete so interfaces.j2 renders) ──────
+networking_interface: lo
+networking_address: "127.0.0.1"
+networking_netmask: "255.0.0.0"
+networking_gateway: "127.0.0.1"
+networking_dns_servers: ["127.0.0.1"]
+networking_dns_search: "dev.jengasec.local"
+
+os_swap_enabled: false
+os_swap_size_mb: 512
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+dns_zone: "dev.jengasec.local"
+dns_reverse_zone: "0.0.127.in-addr.arpa"
+dns_reverse_prefix: "127.0.0"
+dns_forwarders: ["1.1.1.1"]
+dns_recursion_allowed_from: ["localhost"]
+dns_zone_admin_email: "admin.dev.jengasec.local"
+dns_records:
+  - { name: "@", type: A, value: "127.0.0.1" }
+  - { name: "ns1", type: A, value: "127.0.0.1" }
+dns_reverse_records:
+  - { octet: "1", name: "ns1.dev.jengasec.local." }
+dns_allow_transfer: []
+
+# ── DHCP ────────────────────────────────────────────────────────────────────
+dhcp_interfaces: ["lo"]
+dhcp_domain_name: "dev.jengasec.local"
+dhcp_domain_name_servers: ["127.0.0.1"]
+dhcp_subnets:
+  - network: "127.0.0.0"
+    netmask: "255.0.0.0"
+    range_start: "127.0.0.100"
+    range_end: "127.0.0.200"
+    gateway: "127.0.0.1"
+    broadcast: "127.255.255.255"
+dhcp_reservations: []
+dhcp_pxe_enabled: false
+
+# ── Certificates ────────────────────────────────────────────────────────────
+certificates_provider: internal_ca
+certificates_common_name: "dev.jengasec.local"
+certificates_subject_alt_names:
+  - "DNS:dev.jengasec.local"
+
+# ── Application ─────────────────────────────────────────────────────────────
+app_name: jengasec
+app_user: jengasec
+app_group: jengasec
+app_root: "/opt/jengasec"
+app_source_dir: "{{ app_root }}/app"
+app_venv_dir: "{{ app_root }}/venv"
+app_static_dir: "{{ app_source_dir }}/staticfiles"
+app_media_dir: "{{ app_source_dir }}/media"
+app_log_dir: "/var/log/jengasec"
+app_repo_url: "https://github.com/JengaSec-Org/jengasec-competition-platform.git"
+app_repo_branch: main
+
+django_debug: true
+django_allowed_hosts: ["localhost", "127.0.0.1"]
+django_db_name: jengasec_dev
+django_db_user: jengasec
+django_db_host: "127.0.0.1"
+django_db_port: 5432
+django_db_sslmode: prefer
+
+# ── Fake secrets. Not real. Never use this inventory on a real host. ────────
+vault_django_secret_key: "dev-insecure-not-a-real-key"
+vault_postgresql_jengasec_password: "dev-insecure"
+vault_postgresql_replication_password: "dev-insecure"
+vault_redis_password: "dev-insecure"
+vault_grafana_admin_password: "dev-insecure"
+vault_smtp_host: "localhost"
+vault_smtp_port: 25
+vault_smtp_user: "dev@localhost"
+vault_smtp_password: "dev-insecure"
+vault_jengasec_password_hash: "$6$dev$insecure"
+vault_ca_passphrase: "dev-insecure"
+vault_backup_gpg_passphrase: "dev-insecure"
+vault_cloudflare_api_token: "dev-insecure"
+vault_cloudflare_zone_id: "dev-insecure"
+vault_rndc_key: "dev-insecure"

@@ -1,0 +1,36 @@
+# {{ common_managed_banner }}
+#
+# Journal size and retention.
+#
+# Debian's default cap is 10% of the filesystem. On an 8 GB or 4 GB lab server
+# that is far more than the logs are worth, and an uncapped journal filling the
+# disk is the most common way one of these machines dies quietly — the symptom
+# is "PostgreSQL stopped accepting writes", and the cause is a log directory.
+
+[Journal]
+Storage={{ os_journald_storage }}
+
+# Total journal size across all files.
+SystemMaxUse={{ os_journald_max_use }}
+
+# Size of each individual file, so rotation happens in readable chunks.
+SystemMaxFileSize={{ os_journald_max_file_size }}
+
+# Discard entries older than this, even if the size cap is not reached.
+MaxRetentionSec={{ os_journald_max_retention }}
+
+# Keep at least this much free, whatever the caps say.
+SystemKeepFree=1G
+
+# Compress large entries.
+Compress=yes
+
+# Rate limiting. A misbehaving service can otherwise flood the journal and push
+# out the records you actually need. These are generous enough not to lose real
+# events during an incident.
+RateLimitIntervalSec=30s
+RateLimitBurst=10000
+
+# Forward to syslog as well, so the `logging` role's rsyslog rules and any
+# future central collector still see everything.
+ForwardToSyslog=yes

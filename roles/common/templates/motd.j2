@@ -1,0 +1,31 @@
+
+     ██╗███████╗███╗   ██╗ ██████╗  █████╗ ███████╗███████╗ ██████╗
+     ██║██╔════╝████╗  ██║██╔════╝ ██╔══██╗██╔════╝██╔════╝██╔════╝
+     ██║█████╗  ██╔██╗ ██║██║  ███╗███████║███████╗█████╗  ██║
+██   ██║██╔══╝  ██║╚██╗██║██║   ██║██╔══██║╚════██║██╔══╝  ██║
+╚█████╔╝███████╗██║ ╚████║╚██████╔╝██║  ██║███████║███████╗╚██████╗
+ ╚════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝
+
+  {{ jengasec_org | default('Strathmore Cybersecurity Club') }}
+
+  Host        {{ common_hostname }}
+  Role        {{ host_role_description | default('JengaSec server') }}
+  Environment {{ jengasec_environment | default('unknown') | upper }}
+  Groups      {{ group_names | reject('equalto', 'all') | list | join(', ') }}
+  Provisioned {{ ansible_date_time.date }} by jengasec-infrastructure
+
+  ─────────────────────────────────────────────────────────────────────
+
+  This machine is configured by Ansible.
+
+  Changes made by hand will be REVERTED on the next playbook run.
+  To change something, edit the role and re-run it:
+
+      https://github.com/JengaSec-Org/jengasec-infrastructure
+
+  ─────────────────────────────────────────────────────────────────────
+
+  Authorised access only. All activity on this system is logged and
+  audited. Disconnect now if you do not have explicit permission to be
+  here.
+

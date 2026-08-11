@@ -1,0 +1,39 @@
+---
+# storage — Phase 8
+# Filesystem layout, mount points, and permissions for application data.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Create and own the media, static, and log directories
+#   - Mount additional volumes from storage_mounts
+#   - Enforce quotas where a directory could fill the disk
+#   - Set the retention policy for uploaded submissions
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the storage role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'storage' role is a Phase 8 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/storage/README.md.
+  when: not storage_enabled | bool
+  tags:
+    - storage
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install storage
+#   ansible.builtin.apt:
+#     name: "{{ storage_packages }}"
+#     state: present
+#   when: storage_enabled | bool
+#   notify: Restart storage

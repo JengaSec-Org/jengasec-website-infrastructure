@@ -1,0 +1,41 @@
+---
+# backup — Phase 10
+# Backups of the database, media, and configuration, with verified restores.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - pg_dump of the application database on a schedule
+#   - rsync of app_media_dir and /etc
+#   - Compression and GPG encryption before the data leaves the host
+#   - Retention: daily, weekly, monthly tiers
+#   - Restore procedure, scripted rather than remembered
+#   - Automated restore verification into a scratch database
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the backup role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'backup' role is a Phase 10 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/backup/README.md.
+  when: not backup_enabled | bool
+  tags:
+    - backup
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install backup
+#   ansible.builtin.apt:
+#     name: "{{ backup_packages }}"
+#     state: present
+#   when: backup_enabled | bool
+#   notify: Restart backup

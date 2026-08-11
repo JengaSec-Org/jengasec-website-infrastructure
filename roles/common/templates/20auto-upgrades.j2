@@ -1,0 +1,17 @@
+// {{ common_managed_banner }}
+//
+// Schedules the unattended-upgrades run. The policy for WHAT gets upgraded is
+// in 50unattended-upgrades; this file only controls how often apt looks.
+
+// Refresh package lists daily.
+APT::Periodic::Update-Package-Lists "1";
+
+// Download upgradable packages daily, so the install step is fast and does not
+// depend on the network being healthy at the moment it runs.
+APT::Periodic::Download-Upgradeable-Packages "1";
+
+// Apply them daily.
+APT::Periodic::Unattended-Upgrade "1";
+
+// Clean the local package cache weekly. Small disks fill quietly.
+APT::Periodic::AutocleanInterval "7";

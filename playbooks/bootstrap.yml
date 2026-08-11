@@ -1,0 +1,82 @@
+---
+# Phase 1 — Base OS
+#
+# Brings a fresh Debian 12 install to the JengaSec baseline. Safe to run first
+# on a new host, and safe to re-run: the second run must report zero changes.
+#
+#   make bootstrap LIMIT=server1
+#
+# ROLE ORDER IS NOT ARBITRARY:
+#
+#   common   first — every other role assumes its packages and hostname exist
+#   os       kernel and limits, before anything relies on them
+#   users    BEFORE ssh, because ssh disables password authentication and
+#            without an installed key that makes the host unreachable
+#   ssh      only once a key is in place
+#   python   the runtime for the application and for several roles
+#   git      needed before any checkout
+#   systemd  last, so its "failed units" report reflects the finished state
+#
+# `networking` is deliberately absent. It can drop the SSH session it is running
+# over, so it lives in networking.yml and is applied deliberately, with console
+# access available.
+
+- name: "Phase 1 — base operating system"
+  hosts: infra
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Confirm the target is reachable and is Debian 12
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+          - ansible_distribution_major_version | int >= 12
+        fail_msg: >-
+          {{ inventory_hostname }} reports
+          {{ ansible_distribution }} {{ ansible_distribution_version }}.
+          This repository targets Debian 12 (Bookworm).
+        success_msg: >-
+          {{ inventory_hostname }}: {{ ansible_distribution }}
+          {{ ansible_distribution_version }},
+          {{ ansible_memtotal_mb }} MB RAM,
+          {{ ansible_processor_vcpus }} vCPU
+      tags: [always]
+
+  roles:
+    - role: common
+      tags: [common]
+
+    - role: os
+      tags: [os]
+
+    - role: users
+      tags: [users]
+
+    - role: ssh
+      tags: [ssh]
+
+    - role: python
+      tags: [python]
+
+    - role: git
+      tags: [git]
+
+    - role: systemd
+      tags: [systemd]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 1 complete on {{ inventory_hostname }}."
+          - ""
+          - "BEFORE GOING FURTHER — from a second terminal, confirm you can"
+          - "still log in:  ssh -p {{ ssh_port | default(22) }} {{ users_admin_account | default('jengasec') }}@{{ ansible_host | default(inventory_hostname) }}"
+          - ""
+          - "Then run this playbook a SECOND time. It must report zero changed"
+          - "tasks. A run that keeps changing things is not describing the"
+          - "system, it is fighting it."
+          - ""
+          - "Next: make security LIMIT={{ inventory_hostname }}"
+      tags: [always]

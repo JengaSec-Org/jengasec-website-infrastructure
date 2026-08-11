@@ -1,0 +1,53 @@
+" {{ common_managed_banner }}
+"
+" Site-wide vim defaults. Debian sources /etc/vim/vimrc.local automatically.
+" Personal preferences belong in ~/.vimrc.
+
+set nocompatible
+syntax on
+filetype plugin indent on
+
+" ── Display ─────────────────────────────────────────────────────────────────
+set number
+set ruler
+set showcmd
+set showmatch
+set laststatus=2
+set scrolloff=3
+set title
+
+" ── Search ──────────────────────────────────────────────────────────────────
+set incsearch
+set hlsearch
+set ignorecase
+set smartcase
+
+" ── Indentation ─────────────────────────────────────────────────────────────
+" Two spaces, no tabs — YAML breaks on tabs, and most of what gets edited on
+" these servers is YAML or a rendered config.
+set expandtab
+set tabstop=2
+set shiftwidth=2
+set softtabstop=2
+set autoindent
+set smartindent
+
+" Make an accidental tab impossible to miss.
+set list
+set listchars=tab:>-,trailing:.,extends:>,precedes:<
+
+" ── Filetype rules ──────────────────────────────────────────────────────────
+autocmd FileType yaml setlocal ts=2 sts=2 sw=2 expandtab cursorcolumn
+autocmd FileType python setlocal ts=4 sts=4 sw=4 expandtab
+autocmd FileType sh setlocal ts=4 sts=4 sw=4 expandtab
+
+" ── Safety ──────────────────────────────────────────────────────────────────
+set backupdir=/tmp//
+set directory=/tmp//
+set undodir=/tmp//
+set noswapfile
+
+" Editing a config in place, live, on a production server is how outages start.
+" This is a reminder, not a guard.
+set modeline
+set modelines=0

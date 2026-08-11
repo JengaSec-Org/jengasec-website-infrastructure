@@ -1,0 +1,26 @@
+# {{ common_managed_banner }}
+#
+# Resolver configuration for {{ inventory_hostname }}.
+#
+# Written directly rather than through resolvconf or systemd-resolved: neither
+# is installed by default on Debian 12, so the dns-nameservers lines in
+# /etc/network/interfaces.d/ would silently do nothing on their own.
+#
+# If you later install systemd-resolved, this file becomes a symlink it manages
+# and this role must be revisited — set networking_manage_resolv_conf: false.
+
+{% for server in networking_dns_servers %}
+nameserver {{ server }}
+{% endfor %}
+{% if networking_dns_search %}
+
+# Lets you say `ping server2` instead of the fully qualified name.
+search {{ networking_dns_search }}
+domain {{ networking_dns_search }}
+{% endif %}
+
+# timeout: seconds to wait per server before moving to the next.
+# attempts: passes over the whole server list.
+# Two seconds, two attempts — a resolver outage should fail fast rather than
+# hanging every process on the box for the default five seconds a time.
+options timeout:2 attempts:2 rotate

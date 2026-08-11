@@ -1,0 +1,73 @@
+---
+# Defaults for the `git` role — Phase 1.
+# Git itself, system-wide configuration, and host key trust.
+#
+# This role does NOT clone the application. That belongs to the `django` role,
+# which owns the application directory and knows what to do after a checkout
+# changes. This role only makes cloning possible and safe.
+
+git_packages:
+  - git
+  - git-lfs
+
+# ── System-wide git configuration ───────────────────────────────────────────
+# Written to /etc/gitconfig. Users can still override in ~/.gitconfig.
+git_manage_system_config: true
+
+git_config:
+  # Never guess an identity from hostname and username — a commit authored by
+  # "root@server1" tells you nothing about who made it.
+  user.useConfigOnly: "true"
+
+  # Refuse to merge unrelated histories silently.
+  merge.ff: "only"
+  pull.rebase: "false"
+
+  # Detect and refuse to write files whose names differ only by case or by
+  # Unicode normalisation — a known route to sneaking a second, different file
+  # past code review.
+  core.protectHFS: "true"
+  core.protectNTFS: "true"
+
+  # This repository is authored on Windows and deployed on Debian. LF in the
+  # repository, always. Combined with .gitattributes, this stops CRLF reaching
+  # a shell script and producing "bad interpreter: /bin/bash^M".
+  core.autocrlf: "input"
+  core.eol: "lf"
+
+  # Verify object integrity on fetch. Cheap, and catches a corrupted or
+  # tampered-with transfer.
+  transfer.fsckObjects: "true"
+  fetch.fsckObjects: "true"
+  receive.fsckObjects: "true"
+
+  init.defaultBranch: "main"
+  advice.detachedHead: "false"
+
+# ── Repository safety ───────────────────────────────────────────────────────
+# Git refuses to operate on a repository owned by another user (CVE-2022-24765).
+# The application checkout is owned by the app user but inspected by admins over
+# sudo, so those paths are declared safe explicitly.
+git_safe_directories:
+  - "{{ app_source_dir | default('/opt/jengasec/app') }}"
+
+# ── Host key trust ──────────────────────────────────────────────────────────
+# Pre-seeding known_hosts means a clone over SSH cannot hang on an interactive
+# fingerprint prompt during an unattended deployment — and, more importantly,
+# that it cannot be silently answered "yes" to a machine-in-the-middle.
+#
+# Cloning over HTTPS (the default for this project) does not need this.
+git_manage_known_hosts: false
+git_known_hosts:
+  - name: github.com
+    # Fetch the current value with:  ssh-keyscan -t ed25519 github.com
+    # TODO: replace before enabling — do not trust a key copied from anywhere
+    # you have not verified.
+    key: ""
+
+# ── Deploy keys ─────────────────────────────────────────────────────────────
+# Only needed for a private repository. The platform repo is public, so this
+# stays off. If you enable it, use a repository-scoped read-only deploy key —
+# never a personal account key, which would give the server your full access.
+git_deploy_key_enabled: false
+git_deploy_key_path: "/home/{{ app_user | default('jengasec') }}/.ssh/deploy_key"

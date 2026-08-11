@@ -1,0 +1,148 @@
+---
+# systemd — Phase 1
+# The shared systemd baseline: boot target, service hygiene, custom units.
+
+- name: Ensure the systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [systemd, config]
+
+- name: Configure systemd manager defaults
+  ansible.builtin.template:
+    src: systemd-defaults.conf.j2
+    dest: /etc/systemd/system.conf.d/50-jengasec.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reexec systemd
+  tags: [systemd, config]
+
+- name: Set the default boot target
+  ansible.builtin.file:
+    src: "/lib/systemd/system/{{ systemd_default_target }}"
+    dest: /etc/systemd/system/default.target
+    state: link
+    force: true
+  tags: [systemd, target]
+
+# ── Service hygiene ─────────────────────────────────────────────────────────
+
+# failed_when is relaxed here on purpose: a minimal Debian install genuinely
+# does not have cups or bluetooth, and "the service you wanted disabled is not
+# installed" is a success, not an error.
+- name: Disable unnecessary services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+    masked: false
+  loop: "{{ systemd_disabled_services }}"
+  register: systemd_disable_result
+  failed_when:
+    - systemd_disable_result is failed
+    - "'Could not find the requested service' not in (systemd_disable_result.msg | default(''))"
+  tags: [systemd, services]
+
+# A disabled service whose socket is still enabled starts anyway on the first
+# connection. Disabling the service alone and assuming it is gone is one of the
+# more common systemd misunderstandings.
+- name: Disable the matching sockets
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: "{{ systemd_disabled_sockets }}"
+  register: systemd_socket_result
+  failed_when:
+    - systemd_socket_result is failed
+    - "'Could not find the requested service' not in (systemd_socket_result.msg | default(''))"
+  tags: [systemd, services]
+
+- name: Ensure required services are running
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ systemd_enabled_services }}"
+  tags: [systemd, services]
+
+# ── Custom units ────────────────────────────────────────────────────────────
+
+- name: Install custom systemd units
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ systemd_units }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: systemd_units | length > 0
+  notify: Reload systemd
+  tags: [systemd, units]
+
+- name: Install systemd timers
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ systemd_timers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: systemd_timers | length > 0
+  notify: Reload systemd
+  tags: [systemd, timers]
+
+# The unit files have to exist before they can be enabled, and the handler that
+# reloads systemd would otherwise not run until the end of the play.
+- name: Apply pending unit changes
+  ansible.builtin.meta: flush_handlers
+  tags: [systemd]
+
+- name: Enable custom units
+  ansible.builtin.systemd:
+    name: "{{ item.name }}"
+    enabled: "{{ item.enabled | default(true) }}"
+    state: "{{ item.state | default('started') }}"
+  loop: "{{ systemd_units }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: systemd_units | length > 0
+  tags: [systemd, units]
+
+- name: Enable timers
+  ansible.builtin.systemd:
+    name: "{{ item.name }}"
+    enabled: true
+    state: started
+  loop: "{{ systemd_timers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: systemd_timers | length > 0
+  tags: [systemd, timers]
+
+# ── Reporting ───────────────────────────────────────────────────────────────
+
+# A failed unit that nobody noticed is how a backup silently stops running for
+# three weeks. Surface it on every run.
+- name: Check for failed units
+  ansible.builtin.command:
+    cmd: systemctl list-units --state=failed --no-legend --plain
+  register: systemd_failed_units
+  changed_when: false
+  tags: [systemd, verify]
+
+- name: Report failed units
+  ansible.builtin.debug:
+    msg: >-
+      FAILED UNITS on {{ inventory_hostname }}:
+      {{ systemd_failed_units.stdout_lines | join(' | ') }}
+  when: systemd_failed_units.stdout | trim | length > 0
+  tags: [systemd, verify]

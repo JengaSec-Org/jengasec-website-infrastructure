@@ -1,0 +1,29 @@
+;
+; {{ common_managed_banner }}
+;
+; Forward zone for {{ dns_zone }}
+;
+; Records come from dns_records in group_vars/dns/main.yml. Adding a hostname
+; is an edit there — you should never have to touch this template.
+;
+; The serial is bumped only when the zone content actually changes; see the
+; "Serial numbers" section in roles/dns/tasks/main.yml for why that matters.
+;
+; Check this file:  named-checkzone {{ dns_zone }} {{ dns_zone_dir }}/db.{{ dns_zone }}
+;
+$TTL {{ dns_zone_ttl }}
+@       IN      SOA     {{ dns_zone_primary_ns }}. {{ dns_zone_admin_email }}. (
+                        {{ dns_serial }}    ; Serial
+                        {{ dns_zone_refresh }}          ; Refresh — how often a secondary re-checks
+                        {{ dns_zone_retry }}           ; Retry — wait after a failed check
+                        {{ dns_zone_expire }}         ; Expire — stop answering after this
+                        {{ dns_zone_negative_ttl }} )         ; Negative cache TTL
+;
+; ── Nameservers ────────────────────────────────────────────────────────────
+@       IN      NS      {{ dns_zone_primary_ns }}.
+;
+; ── Records ────────────────────────────────────────────────────────────────
+{% for record in dns_records %}
+{{ "%-15s"|format(record.name) }} IN      {{ "%-6s"|format(record.type) }}  {{ record.value }}{% if record.type in ['CNAME', 'NS', 'MX', 'PTR'] and not record.value.endswith('.') %}.{{ dns_zone }}.{% endif %}
+
+{% endfor %}

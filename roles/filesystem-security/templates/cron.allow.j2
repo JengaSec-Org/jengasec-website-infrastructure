@@ -1,0 +1,15 @@
+# {{ common_managed_banner }}
+#
+# Who may schedule jobs on {{ inventory_hostname }}.
+#
+# This file exists WITHOUT a matching cron.deny, and that combination is what
+# makes it restrictive: only the accounts listed here may use crontab or at.
+# Everyone else is refused, including accounts that could otherwise write to a
+# cron directory.
+#
+# If cron.deny is ever recreated, the semantics change — the role removes it on
+# every run for exactly that reason.
+
+{% for user in filesystem_security_cron_allowed_users %}
+{{ user }}
+{% endfor %}

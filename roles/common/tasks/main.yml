@@ -1,0 +1,196 @@
+---
+# common — Phase 1
+# The foundation every other role assumes: packages, identity, time, locale.
+#
+# This role runs first on every host, and nothing else in the repository is
+# safe to run before it.
+
+- name: Assert the target is Debian
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "Debian"
+    fail_msg: >-
+      This repository targets Debian 12 (Bookworm). {{ inventory_hostname }}
+      reports {{ ansible_distribution }} {{ ansible_distribution_version }}.
+      Every role uses apt and Debian package names; running them elsewhere will
+      fail in confusing ways.
+    success_msg: "{{ ansible_distribution }} {{ ansible_distribution_version }} — supported"
+  tags: [common, always]
+
+# ── Packages ────────────────────────────────────────────────────────────────
+
+- name: Update the apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ common_apt_cache_valid_time }}"
+  tags: [common, packages]
+
+- name: Upgrade installed packages
+  ansible.builtin.apt:
+    upgrade: "{{ common_upgrade_type }}"
+  when: common_upgrade_packages | bool
+  tags: [common, packages]
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+  tags: [common, packages]
+
+- name: Install build tools
+  ansible.builtin.apt:
+    name: "{{ common_build_packages }}"
+    state: present
+  when: common_install_build_tools | bool
+  tags: [common, packages]
+
+# ── Identity ────────────────────────────────────────────────────────────────
+
+- name: Set the system hostname
+  ansible.builtin.hostname:
+    name: "{{ common_hostname }}"
+  tags: [common, hostname]
+
+# Without this, sudo pauses for ~10s on every invocation trying to resolve the
+# hostname, and Bind9 refuses to start. It is the classic silent-slowness bug.
+- name: Ensure the hostname resolves in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: "127.0.1.1 {{ common_hostname }} {{ common_hostname.split('.')[0] }}"
+    state: present
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_manage_hosts_file | bool
+  tags: [common, hostname]
+
+# ── Localisation ────────────────────────────────────────────────────────────
+
+- name: Ensure required locales are generated
+  community.general.locale_gen:
+    name: "{{ item.split()[0] }}"
+    state: present
+  loop: "{{ common_locales_present }}"
+  tags: [common, locale]
+
+- name: Set the default system locale
+  ansible.builtin.copy:
+    content: |
+      # {{ common_managed_banner }}
+      LANG={{ common_locale }}
+      LC_ALL={{ common_locale }}
+    dest: /etc/default/locale
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [common, locale]
+
+- name: Set the system timezone
+  community.general.timezone:
+    name: "{{ common_timezone }}"
+  notify: Restart cron
+  tags: [common, timezone]
+
+# ── Time synchronisation ────────────────────────────────────────────────────
+
+- name: Install systemd-timesyncd
+  ansible.builtin.apt:
+    name: systemd-timesyncd
+    state: present
+  when: common_ntp_enabled | bool
+  tags: [common, ntp]
+
+- name: Configure NTP servers
+  ansible.builtin.template:
+    src: timesyncd.conf.j2
+    dest: /etc/systemd/timesyncd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_ntp_enabled | bool
+  notify: Restart timesyncd
+  tags: [common, ntp]
+
+- name: Enable time synchronisation
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+  when: common_ntp_enabled | bool
+  tags: [common, ntp]
+
+# ── Unattended upgrades ─────────────────────────────────────────────────────
+
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades
+      - apt-listchanges
+    state: present
+  when: common_unattended_upgrades_enabled | bool
+  tags: [common, updates]
+
+- name: Configure unattended upgrades
+  ansible.builtin.template:
+    src: 50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_unattended_upgrades_enabled | bool
+  tags: [common, updates]
+
+- name: Enable the automatic upgrade timer
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_unattended_upgrades_enabled | bool
+  tags: [common, updates]
+
+# ── Shell environment ───────────────────────────────────────────────────────
+
+# Debian generates a dynamic MOTD from /etc/update-motd.d. Ours must be static
+# and authoritative, so the dynamic pieces are disabled first.
+- name: Disable the dynamic MOTD fragments
+  ansible.builtin.file:
+    path: "/etc/update-motd.d/{{ item }}"
+    mode: "0644"
+  loop:
+    - 10-uname
+  failed_when: false
+  when: common_manage_motd | bool
+  tags: [common, motd]
+
+- name: Install the JengaSec MOTD
+  ansible.builtin.template:
+    src: motd.j2
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_manage_motd | bool
+  tags: [common, motd]
+
+- name: Install the shared shell profile
+  ansible.builtin.template:
+    src: bashrc.j2
+    dest: /etc/profile.d/99-jengasec.sh
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_manage_bashrc | bool
+  tags: [common, shell]
+
+- name: Install the shared vim configuration
+  ansible.builtin.template:
+    src: vimrc.j2
+    dest: /etc/vim/vimrc.local
+    owner: root
+    group: root
+    mode: "0644"
+  when: common_manage_vimrc | bool
+  tags: [common, shell]

@@ -1,0 +1,57 @@
+---
+# JengaSec Infrastructure — every phase, in order.
+#
+#   make site
+#   ansible-playbook -i inventories/production site.yml
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  DO NOT RUN THIS FOR A FIRST BUILD.                                       │
+# │                                                                           │
+# │  Run each phase separately and verify between them — docs/runbook.md.     │
+# │  This file exists for two things:                                         │
+# │                                                                           │
+# │    make check    a full dry run, which is genuinely useful                │
+# │    re-applying a known-good configuration to a host that has drifted      │
+# │                                                                           │
+# │  Running it blind against a fresh server means the networking and         │
+# │  firewall roles apply with nobody watching, and if either is wrong you    │
+# │  find out by losing the connection.                                       │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Phases 4-10 are stubs and will fail the run. That is deliberate — the play
+# stops rather than reporting success on a machine with no application on it.
+
+# ── Phase 1 — Base OS ───────────────────────────────────────────────────────
+- name: Import Phase 1 — base operating system
+  ansible.builtin.import_playbook: playbooks/bootstrap.yml
+
+# ── Phase 2 — Networking ────────────────────────────────────────────────────
+# Includes networking, firewall, certificates, DNS, DHCP.
+- name: Import Phase 2 — networking
+  ansible.builtin.import_playbook: playbooks/networking.yml
+
+# ── Phase 3 — Security ──────────────────────────────────────────────────────
+# `security` pulls in fail2ban, audit, and filesystem-security.
+- name: Import Phase 3 — security hardening
+  ansible.builtin.import_playbook: playbooks/security.yml
+
+# ── Phase 5 — Database ──────────────────────────────────────────────────────
+# Before the platform: Django's migrations need somewhere to run.
+- name: Import Phase 5 — database
+  ansible.builtin.import_playbook: playbooks/database.yml
+
+# ── Phase 4 — Application platform ──────────────────────────────────────────
+- name: Import Phase 4 — application platform
+  ansible.builtin.import_playbook: playbooks/platform.yml
+
+# ── Phase 8 — Storage ───────────────────────────────────────────────────────
+- name: Import Phase 8 — storage
+  ansible.builtin.import_playbook: playbooks/storage.yml
+
+# ── Phase 7 — Monitoring and logging ────────────────────────────────────────
+- name: Import Phase 7 — monitoring and logging
+  ansible.builtin.import_playbook: playbooks/monitoring.yml
+
+# ── Phase 10 — Backup ───────────────────────────────────────────────────────
+- name: Import Phase 10 — backup
+  ansible.builtin.import_playbook: playbooks/backup.yml

@@ -1,0 +1,13 @@
+---
+# Handlers for the `monitoring` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart monitoring
+  ansible.builtin.systemd:
+    name: "{{ monitoring_service_name | default('monitoring') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart monitoring"
+  when: monitoring_enabled | bool

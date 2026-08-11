@@ -1,0 +1,101 @@
+---
+# Defaults for the `common` role — Phase 1.
+# Override in group_vars/ or host_vars/, never by editing this file.
+
+# ── Package management ──────────────────────────────────────────────────────
+# Only refresh the apt cache if it is older than this. Without a TTL, every
+# playbook run re-downloads package indexes from every host.
+common_apt_cache_valid_time: 3600
+
+# Applies security and bug-fix updates to already-installed packages. It does
+# not remove anything, so it is safe to leave on. Set false if you need frozen
+# package versions during the competition itself.
+common_upgrade_packages: true
+common_upgrade_type: safe          # safe | full | dist
+
+# Base toolkit present on every JengaSec host.
+common_packages:
+  - ca-certificates
+  - curl
+  - wget
+  - gnupg
+  - lsb-release
+  - apt-transport-https
+  - software-properties-common
+  - vim
+  - nano
+  - htop
+  - tree
+  - rsync
+  - unzip
+  - zip
+  - net-tools
+  - dnsutils
+  - tcpdump
+  - lsof
+  - jq
+  - bash-completion
+  - acl                            # setfacl, used by filesystem-security
+  - sudo
+
+# Build toolchain. Needed by pip for any package without a manylinux wheel —
+# psycopg2 and PyMuPDF in the platform's requirements.txt are both candidates.
+common_install_build_tools: true
+common_build_packages:
+  - build-essential
+  - pkg-config
+  - libpq-dev                      # psycopg2
+  - libjpeg-dev                    # Pillow, if it is ever added
+  - zlib1g-dev
+  - libffi-dev
+  - libssl-dev
+
+# ── Identity ────────────────────────────────────────────────────────────────
+# Defaults to the inventory name so the role works before host_vars are filled.
+common_hostname: "{{ inventory_hostname }}"
+common_manage_hosts_file: true
+
+# ── Localisation ────────────────────────────────────────────────────────────
+common_timezone: "Africa/Nairobi"
+common_locale: "en_US.UTF-8"
+common_locales_present:
+  - "en_US.UTF-8 UTF-8"
+
+# ── Time synchronisation ────────────────────────────────────────────────────
+# Correct time is not cosmetic here: log correlation across three servers, TLS
+# validity, and Kerberos-style token windows all depend on it. systemd-timesyncd
+# ships with Debian 12 and is sufficient — chrony is only worth it if you need
+# to serve time to other machines.
+common_ntp_enabled: true
+common_ntp_servers:
+  - 0.debian.pool.ntp.org
+  - 1.debian.pool.ntp.org
+  - 2.debian.pool.ntp.org
+common_ntp_fallback_servers:
+  - 3.debian.pool.ntp.org
+
+# ── Unattended upgrades ─────────────────────────────────────────────────────
+# Security patches only. Deliberately NOT the general updates pocket: an
+# unattended feature upgrade during the competition is a self-inflicted outage.
+common_unattended_upgrades_enabled: true
+common_unattended_upgrades_security_only: true
+common_unattended_upgrades_auto_reboot: false      # never reboot without a human
+common_unattended_upgrades_mail: ""                # set to alert on failures
+common_unattended_upgrades_blacklist: []           # e.g. postgresql-15, nginx
+
+# ── APT repositories ────────────────────────────────────────────────────────
+common_manage_apt_sources: false                   # true once you use a mirror
+common_apt_mirror: "http://deb.debian.org/debian"
+common_apt_security_mirror: "http://security.debian.org/debian-security"
+
+# ── Shell environment ───────────────────────────────────────────────────────
+common_manage_motd: true
+common_manage_bashrc: true
+common_manage_vimrc: true
+
+# Fallback for the banner if group_vars does not define one.
+common_managed_banner: >-
+  Managed by Ansible — jengasec-infrastructure. Local edits WILL be overwritten.
+
+# Shown in the MOTD. host_vars normally overrides this.
+host_role_description: "JengaSec server"

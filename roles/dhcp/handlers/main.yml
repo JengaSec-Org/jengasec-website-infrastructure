@@ -1,0 +1,14 @@
+---
+# Handlers for the `dhcp` role.
+
+# Restart, not reload — isc-dhcp-server has no reload. The brief gap is
+# harmless: clients keep their current lease and simply retry, so nothing
+# notices a restart that takes under a second.
+#
+# dhcpd.conf is validated with `dhcpd -t -cf` before it is written, so this
+# cannot be handed a config that stops the daemon coming back.
+- name: Restart dhcp
+  ansible.builtin.systemd:
+    name: "{{ dhcp_service_name }}"
+    state: restarted
+  listen: "restart dhcp"

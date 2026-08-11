@@ -1,0 +1,86 @@
+---
+# fail2ban — Phase 3
+
+- name: Install fail2ban
+  ansible.builtin.apt:
+    name: "{{ fail2ban_packages }}"
+    state: present
+  tags: [fail2ban, packages]
+
+# jail.local, not jail.conf. jail.conf is shipped by the package and replaced on
+# every upgrade; anything written there is lost the first time fail2ban is
+# updated. jail.local overrides it and is left alone.
+- name: Write jail.local
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+  tags: [fail2ban, config]
+
+- name: Install the Django login filter
+  ansible.builtin.template:
+    src: filter-django-auth.conf.j2
+    dest: /etc/fail2ban/filter.d/django-auth.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: fail2ban_django_enabled | bool
+  notify: Restart fail2ban
+  tags: [fail2ban, config]
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd:
+    name: "{{ fail2ban_service_name }}"
+    enabled: true
+    state: started
+  tags: [fail2ban, service]
+
+- name: Apply pending jail changes
+  ansible.builtin.meta: flush_handlers
+  tags: [fail2ban]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+# A jail that starts but never matches looks identical to a working one from the
+# outside. Reading back the active jail list is the only way to know.
+- name: Read back the active jails
+  ansible.builtin.command:
+    cmd: fail2ban-client status
+  register: fail2ban_status
+  changed_when: false
+  failed_when: false
+  tags: [fail2ban, verify]
+
+- name: Report the active jails
+  ansible.builtin.debug:
+    msg: "{{ fail2ban_status.stdout_lines | default(['fail2ban-client did not respond']) }}"
+  tags: [fail2ban, verify]
+
+- name: Report the sshd jail in detail
+  ansible.builtin.command:
+    cmd: fail2ban-client status sshd
+  register: fail2ban_sshd_status
+  changed_when: false
+  failed_when: false
+  when: fail2ban_sshd_enabled | bool
+  tags: [fail2ban, verify]
+
+# "0 total failed" after the host has been up for a while usually means the jail
+# is not reading anything — wrong backend, or a log path that does not exist.
+- name: Warn if the sshd jail has never matched
+  ansible.builtin.debug:
+    msg: >-
+      The sshd jail reports no failures at all. On a host that has been up for
+      any length of time that usually means it is not reading the log rather
+      than that nothing has tried — check fail2ban_backend (should be
+      'systemd' on Debian 12, which has no /var/log/auth.log) with
+      `journalctl -u fail2ban`.
+  when:
+    - fail2ban_sshd_enabled | bool
+    - fail2ban_sshd_status.stdout is defined
+    - "'Total failed:\t0' in (fail2ban_sshd_status.stdout | default(''))"
+    - (ansible_uptime_seconds | default(0)) > 86400
+  tags: [fail2ban, verify]

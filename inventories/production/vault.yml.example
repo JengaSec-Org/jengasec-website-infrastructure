@@ -1,0 +1,57 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPLATE — every secret this repository needs, with placeholder values.
+#
+#   cp vault.yml.example vault.yml
+#   # edit vault.yml with real values
+#   ansible-vault encrypt vault.yml
+#
+# vault.yml is gitignored. THIS file is committed and must never contain a real
+# secret. Full workflow in docs/secrets.md.
+#
+# Convention: every key is prefixed vault_ so that a grep for `vault_` in the
+# roles shows exactly what is sensitive, and a variable referenced from a task
+# is obviously a secret at the call site.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Django ──────────────────────────────────────────────────────────────────
+# Becomes DJANGO_SECRET_KEY. Generate a real one:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(64))"
+vault_django_secret_key: "CHANGE_ME_generate_a_64_character_random_string"
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+vault_postgresql_jengasec_password: "CHANGE_ME"
+vault_postgresql_replication_password: "CHANGE_ME"   # Phase 6, replication
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+vault_redis_password: "CHANGE_ME"
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+vault_grafana_admin_password: "CHANGE_ME"
+
+# ── SMTP (Django password-reset and notification email) ────────────────────
+vault_smtp_host: "smtp.example.com"
+vault_smtp_port: 587
+vault_smtp_user: "sucybersec@strathmore.edu"
+vault_smtp_password: "CHANGE_ME"
+
+# ── Local account passwords ─────────────────────────────────────────────────
+# A HASH, not a plaintext password. Generate with:
+#   mkpasswd --method=sha-512
+# or, without the whois package installed:
+#   python3 -c "import crypt; print(crypt.crypt(input(), crypt.mksalt(crypt.METHOD_SHA512)))"
+vault_jengasec_password_hash: "$6$CHANGE_ME"
+
+# ── Internal certificate authority ──────────────────────────────────────────
+vault_ca_passphrase: "CHANGE_ME"
+
+# ── Backup encryption ───────────────────────────────────────────────────────
+vault_backup_gpg_passphrase: "CHANGE_ME"
+
+# ── Cloudflare (Phase 9, role currently a stub) ─────────────────────────────
+vault_cloudflare_api_token: "CHANGE_ME"
+vault_cloudflare_zone_id: "CHANGE_ME"
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+# rndc key for controlling Bind9. Generate with:  rndc-confgen -a
+vault_rndc_key: "CHANGE_ME"

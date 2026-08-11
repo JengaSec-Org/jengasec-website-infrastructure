@@ -1,0 +1,13 @@
+---
+# Handlers for the `nginx` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart nginx
+  ansible.builtin.systemd:
+    name: "{{ nginx_service_name | default('nginx') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart nginx"
+  when: nginx_enabled | bool

@@ -1,0 +1,22 @@
+# {{ common_managed_banner }}
+#
+# sudo policy for {{ item.name }}.
+#
+# Validated with `visudo -cf` before this file is put in place. A syntax error
+# in sudoers means nobody can become root — on a machine you may only be able
+# to reach over SSH. That is why /etc/sudoers itself is never edited here; every
+# rule is a separate, validated file in /etc/sudoers.d/.
+
+{% if item.sudo_commands is defined and item.sudo_commands | length > 0 %}
+# Restricted: {{ item.name }} may run ONLY the commands listed below.
+# Anything else is refused, even with the correct password.
+#
+# Full paths only. A bare command name would let anyone who can write to a
+# directory earlier in PATH substitute their own binary and run it as root.
+Cmnd_Alias {{ item.name | upper | replace('-', '_') }}_CMDS = {{ item.sudo_commands | join(', \\\n    ') }}
+
+{{ item.name }} ALL=(root) {% if item.sudo_nopasswd | default(false) %}NOPASSWD: {% endif %}{{ item.name | upper | replace('-', '_') }}_CMDS
+{% else %}
+# Full sudo access.
+{{ item.name }} ALL=(ALL:ALL) {% if item.sudo_nopasswd | default(false) %}NOPASSWD: {% endif %}ALL
+{% endif %}

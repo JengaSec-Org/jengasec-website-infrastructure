@@ -1,0 +1,41 @@
+---
+# loadbalancer — Phase 6
+# HAProxy or nginx load balancing across application hosts.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Reverse proxy to multiple backends
+#   - Round-robin and least-connections algorithms
+#   - Active health checks with backend ejection
+#   - Sticky sessions for the judging workflow
+#   - TLS offloading
+#   - Stats endpoint, restricted to the LAN
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the loadbalancer role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'loadbalancer' role is a Phase 6 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/loadbalancer/README.md.
+  when: not loadbalancer_enabled | bool
+  tags:
+    - loadbalancer
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install loadbalancer
+#   ansible.builtin.apt:
+#     name: "{{ loadbalancer_packages }}"
+#     state: present
+#   when: loadbalancer_enabled | bool
+#   notify: Restart loadbalancer

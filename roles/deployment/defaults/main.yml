@@ -1,0 +1,19 @@
+---
+# Defaults for the `deployment` role — Phase 7.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+deployment_enabled: false
+
+# set to a tag or SHA for a repeatable release
+deployment_revision: HEAD
+deployment_keep_releases: 3
+deployment_healthcheck_url: "https://platform.{{ jengasec_domain }}/"
+deployment_healthcheck_retries: 5
+deployment_healthcheck_delay: 5
+deployment_rollback_on_failure: true
+# serve a holding page during the release
+deployment_maintenance_page: true

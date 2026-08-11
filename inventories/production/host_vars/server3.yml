@@ -1,0 +1,34 @@
+---
+# server3 — backup + monitoring. Prometheus, Grafana, backup target.
+
+# ── Identity ────────────────────────────────────────────────────────────────
+inventory_hostname_short: server3
+common_hostname: "server3.{{ jengasec_domain }}"
+host_role_description: "Backup + monitoring — Prometheus, Grafana, backup target"
+
+# ── Network ─────────────────────────────────────────────────────────────────
+networking_interface: eth0               # TODO: replace
+networking_address: 10.0.0.13            # TODO: replace
+networking_netmask: 255.255.255.0        # TODO: replace
+networking_gateway: "{{ jengasec_network_gateway }}"
+networking_dns_servers:
+  - 10.0.0.12                            # TODO: replace
+  - 1.1.1.1
+networking_dns_search: "{{ jengasec_domain }}"
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+os_swap_enabled: true
+os_swap_size_mb: 2048
+
+# This host holds every backup, so it is the one where a full disk is a silent
+# disaster. The monitoring role should alert well before it fills.
+os_disk_usage_warn_percent: 75
+
+# ── Certificates ────────────────────────────────────────────────────────────
+certificates_common_name: "grafana.{{ jengasec_domain }}"
+certificates_subject_alt_names:
+  - "DNS:grafana.{{ jengasec_domain }}"
+  - "DNS:prometheus.{{ jengasec_domain }}"
+  - "DNS:backup.{{ jengasec_domain }}"
+  - "DNS:server3.{{ jengasec_domain }}"
+  - "IP:10.0.0.13"                       # TODO: replace

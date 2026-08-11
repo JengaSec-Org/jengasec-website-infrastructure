@@ -1,0 +1,40 @@
+---
+# cloudflare — Phase 9
+# Public access via Cloudflare DNS, Tunnel, and WAF.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - cloudflared Tunnel, so no inbound port needs opening
+#   - DNS record management through the API
+#   - Firewall and rate-limiting rules
+#   - Origin certificates
+#   - Decide Tunnel vs public DNS according to campus network policy
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the cloudflare role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'cloudflare' role is a Phase 9 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/cloudflare/README.md.
+  when: not cloudflare_enabled | bool
+  tags:
+    - cloudflare
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install cloudflare
+#   ansible.builtin.apt:
+#     name: "{{ cloudflare_packages }}"
+#     state: present
+#   when: cloudflare_enabled | bool
+#   notify: Restart cloudflare

@@ -1,0 +1,24 @@
+---
+# Defaults for the `nginx` role — Phase 4.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+nginx_enabled: false
+
+# one worker per core
+nginx_worker_processes: auto
+nginx_worker_connections: 1024
+# submission uploads are PDFs and DOCX
+nginx_client_max_body_size: "25m"
+nginx_keepalive_timeout: 65
+nginx_gzip_enabled: true
+# one year, only once HTTPS is confirmed working
+nginx_hsts_max_age: 31536000
+# brute-force ceiling on the login form
+nginx_rate_limit_login: "5r/m"
+nginx_server_name: "platform.{{ jengasec_domain }}"
+# must match gunicorn_bind
+nginx_upstream_socket: "unix:/run/gunicorn/gunicorn.sock"

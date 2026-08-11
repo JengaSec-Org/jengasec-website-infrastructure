@@ -1,0 +1,77 @@
+---
+# Defaults for the `systemd` role — Phase 1.
+#
+# Deployment on these servers is native systemd, not containers: with 8 GB and
+# 4 GB of RAM, a Docker or Kubernetes layer costs memory and debugging effort
+# without buying anything a university-scale competition needs. systemd already
+# provides supervision, restart policy, dependency ordering, resource limits,
+# logging, and a sandbox — which is most of what people reach for containers to
+# get. See docs/decisions.md.
+#
+# This role provides the shared systemd baseline. Individual units (gunicorn,
+# nginx, node_exporter) are owned by their own roles.
+
+# ── Boot behaviour ──────────────────────────────────────────────────────────
+systemd_default_target: multi-user.target      # never graphical on a server
+
+# Bound so a hung service cannot stall a reboot indefinitely. The default is
+# 90s per job, which on a box with several services turns into a long wait
+# while you are standing in the server room.
+systemd_default_timeout_start_sec: 60
+systemd_default_timeout_stop_sec: 30
+
+# ── Services to disable ─────────────────────────────────────────────────────
+# Present on a default Debian install with no use on a headless server. Each is
+# a listening process or a background job that exists for nothing.
+systemd_disabled_services:
+  - bluetooth.service
+  - cups.service
+  - cups-browsed.service
+  - avahi-daemon.service          # mDNS — noisy, and it announces the host
+  - ModemManager.service
+
+# Sockets have to be disabled separately: a disabled service with an enabled
+# socket still starts on the first connection. Missing this is a common reason
+# "I disabled that" turns out not to be true.
+systemd_disabled_sockets:
+  - avahi-daemon.socket
+  - cups.socket
+
+# ── Services that must be running ───────────────────────────────────────────
+systemd_enabled_services:
+  - systemd-journald.service
+  - systemd-timesyncd.service
+  - cron.service
+
+# ── Custom units ────────────────────────────────────────────────────────────
+# Extra units, as dicts. Most units belong to the role that owns their service;
+# use this for one-offs that have no natural home.
+#
+#   - name: jengasec-cleanup.service
+#     content: |
+#       [Unit]
+#       Description=Clean up stale submission temp files
+#       ...
+systemd_units: []
+
+# ── Timers ──────────────────────────────────────────────────────────────────
+# Timers rather than cron for anything systemd already supervises: you get
+# journal logging, dependency ordering, Persistent=true to catch up after
+# downtime, and RandomizedDelaySec so three servers do not all fire at once.
+#
+#   - name: jengasec-backup.timer
+#     content: |
+#       [Timer]
+#       OnCalendar=daily
+#       Persistent=true
+systemd_timers: []
+
+# ── Resource accounting ─────────────────────────────────────────────────────
+# Makes `systemd-cgtop` and `systemctl status` show real CPU and memory per
+# service. Costs a little overhead; worth it when you are trying to find what is
+# eating a 4 GB box during a competition.
+systemd_accounting_enabled: true
+
+# ── Journal ─────────────────────────────────────────────────────────────────
+# Journal sizing is owned by the `os` role — see os_journald_max_use. It is not
+# duplicated here, so there is exactly one place to change it.

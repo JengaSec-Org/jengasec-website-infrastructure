@@ -1,0 +1,18 @@
+---
+# Handlers for the `ssh` role.
+
+# RELOAD, never restart.
+#
+# `reload` re-reads the config and keeps the listening socket, so established
+# sessions — including the one Ansible is running over — are untouched.
+# `restart` tears the daemon down and brings it back up; if the new config is
+# bad, it does not come back, and you find out by losing the connection you
+# would have used to fix it.
+#
+# The config is already validated with `sshd -t` before it is written, so a
+# reload here cannot be handed anything unparseable.
+- name: Reload sshd
+  ansible.builtin.systemd:
+    name: "{{ ssh_service_name }}"
+    state: reloaded
+  listen: "reload sshd"

@@ -1,0 +1,239 @@
+---
+# security — Phase 3
+# Host hardening. CIS Debian 12 Benchmark item numbers are in the comments.
+#
+# fail2ban, audit, and filesystem-security are pulled in by meta/main.yml.
+
+# ── Package hygiene (CIS 2.2) ───────────────────────────────────────────────
+
+- name: Remove insecure and unnecessary packages
+  ansible.builtin.apt:
+    name: "{{ security_remove_packages }}"
+    state: absent
+    purge: true
+  failed_when: false      # most are not installed on a minimal Debian
+  tags: [security, packages]
+
+- name: Install hardening tools
+  ansible.builtin.apt:
+    name:
+      - libpam-pwquality
+      - apparmor
+      - apparmor-utils
+      - acct
+    state: present
+  tags: [security, packages]
+
+# ── Password quality (CIS 5.4.1) ────────────────────────────────────────────
+
+- name: Configure password quality requirements
+  ansible.builtin.template:
+    src: pwquality.conf.j2
+    dest: /etc/security/pwquality.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: security_password_quality_enabled | bool
+  tags: [security, passwords]
+
+# ── Login policy (CIS 5.5) ──────────────────────────────────────────────────
+
+# login.defs is edited line by line rather than templated: it carries a lot of
+# distribution defaults that are correct and that we have no reason to own. This
+# is the one place in the repository where lineinfile beats a template.
+- name: Set login policy defaults
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^#?{{ item.key }}\\s"
+    line: "{{ item.key }}\t{{ item.value }}"
+    state: present
+  loop:
+    - { key: "PASS_MAX_DAYS", value: "{{ security_password_max_days }}" }
+    - { key: "PASS_MIN_DAYS", value: "{{ security_password_min_days }}" }
+    - { key: "PASS_WARN_AGE", value: "{{ security_password_warn_age }}" }
+    - { key: "UMASK", value: "{{ security_login_defs_umask }}" }
+    - { key: "FAIL_DELAY", value: "{{ security_fail_delay }}" }
+    - { key: "ENCRYPT_METHOD", value: "SHA512" }
+    - { key: "SHA_CRYPT_MIN_ROUNDS", value: "10000" }
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [security, login]
+
+- name: Set the default account inactivity period
+  ansible.builtin.command:
+    cmd: "useradd -D -f {{ security_password_inactive_days }}"
+  register: security_useradd_default
+  changed_when: false      # useradd -D is not reliably idempotent in its output
+  tags: [security, login]
+
+# ── Banners (CIS 1.7) ───────────────────────────────────────────────────────
+
+- name: Install the console and network banners
+  ansible.builtin.template:
+    src: issue.j2
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net
+  when: security_manage_banners | bool
+  tags: [security, banners]
+
+# Debian's default /etc/motd and the dynamic fragments print the OS release.
+# The `common` role owns /etc/motd; this only removes the version disclosure.
+- name: Remove the OS version from the dynamic MOTD
+  ansible.builtin.file:
+    path: /etc/update-motd.d/10-uname
+    state: absent
+  when: security_manage_banners | bool
+  tags: [security, banners]
+
+# ── su restriction (CIS 5.6) ────────────────────────────────────────────────
+
+- name: Restrict su to a single group
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^#?auth\s+required\s+pam_wheel\.so'
+    line: "auth       required   pam_wheel.so use_uid group={{ security_su_group }}"
+    state: present
+  when: security_restrict_su | bool
+  tags: [security, su]
+
+# ── Core dumps (CIS 1.5.1) ──────────────────────────────────────────────────
+
+- name: Ensure the coredump drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: security_disable_coredumps | bool
+  tags: [security, coredumps]
+
+# The `os` role sets the ulimit; this disables systemd's coredump handler, which
+# catches dumps the ulimit path does not.
+- name: Disable the systemd coredump handler
+  ansible.builtin.copy:
+    content: |
+      # {{ common_managed_banner }}
+      # A core file from the Django process would contain DJANGO_SECRET_KEY and
+      # whatever submission data was in memory, written to disk in plaintext.
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+    dest: /etc/systemd/coredump.conf.d/60-jengasec.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: security_disable_coredumps | bool
+  tags: [security, coredumps]
+
+# ── Ctrl-Alt-Del (CIS 1.4.3) ────────────────────────────────────────────────
+
+- name: Disable the Ctrl-Alt-Del reboot
+  ansible.builtin.systemd:
+    name: ctrl-alt-del.target
+    masked: true
+  when: security_disable_ctrl_alt_del | bool
+  tags: [security, console]
+
+# ── Shared memory ───────────────────────────────────────────────────────────
+
+# /dev/shm is world-writable by design, which makes it a convenient staging area
+# for a dropped payload. noexec stops it being run from there.
+- name: Harden /dev/shm
+  ansible.posix.mount:
+    path: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: "defaults,noexec,nosuid,nodev"
+    state: mounted
+  when: security_harden_shm | bool
+  tags: [security, mounts]
+
+# ── AppArmor (CIS 1.6) ──────────────────────────────────────────────────────
+
+- name: Enable AppArmor
+  ansible.builtin.systemd:
+    name: apparmor
+    enabled: true
+    state: started
+  when: security_apparmor_enabled | bool
+  tags: [security, apparmor]
+
+# Complain mode logs a violation but allows it. That is useful while writing a
+# profile and worthless as a control — enforce mode is what actually stops
+# anything.
+- name: Put AppArmor profiles into enforce mode
+  ansible.builtin.command:
+    cmd: aa-enforce /etc/apparmor.d/*
+  register: security_apparmor_enforce
+  changed_when: "'Setting' in security_apparmor_enforce.stdout"
+  failed_when: false
+  when:
+    - security_apparmor_enabled | bool
+    - security_apparmor_enforce_profiles | bool
+  tags: [security, apparmor]
+
+# ── Process accounting ──────────────────────────────────────────────────────
+
+# Records every command executed, complementing auditd: auditd reports specific
+# watched events, acct gives the full command history a forensics exercise needs.
+- name: Enable process accounting
+  ansible.builtin.systemd:
+    name: acct
+    enabled: true
+    state: started
+  when: security_process_accounting | bool
+  failed_when: false
+  tags: [security, accounting]
+
+# ── Reporting ───────────────────────────────────────────────────────────────
+
+# Accounts with an empty password field can be logged into with no credential at
+# all. There should never be any; report loudly if there are.
+- name: Check for accounts with empty passwords
+  ansible.builtin.shell:
+    cmd: "awk -F: '($2 == \"\") { print $1 }' /etc/shadow"
+  args:
+    executable: /bin/bash
+  register: security_empty_passwords
+  changed_when: false
+  failed_when: false
+  tags: [security, verify]
+
+- name: Report accounts with empty passwords
+  ansible.builtin.fail:
+    msg: >-
+      Accounts with EMPTY passwords on {{ inventory_hostname }}:
+      {{ security_empty_passwords.stdout_lines | join(', ') }}.
+      These can be logged into with no credential. Lock them immediately:
+      passwd -l <account>
+  when: security_empty_passwords.stdout | trim | length > 0
+  tags: [security, verify]
+
+# UID 0 is root. A second account with UID 0 is root under a different name,
+# and it is a classic persistence trick precisely because it does not look like
+# one in a user listing.
+- name: Check for non-root accounts with UID 0
+  ansible.builtin.shell:
+    cmd: "awk -F: '($3 == 0 && $1 != \"root\") { print $1 }' /etc/passwd"
+  args:
+    executable: /bin/bash
+  register: security_uid_zero
+  changed_when: false
+  failed_when: false
+  tags: [security, verify]
+
+- name: Report non-root accounts with UID 0
+  ansible.builtin.fail:
+    msg: >-
+      Accounts other than root have UID 0 on {{ inventory_hostname }}:
+      {{ security_uid_zero.stdout_lines | join(', ') }}.
+      These have full root privileges. Investigate before continuing — this is a
+      common persistence mechanism, not usually a configuration mistake.
+  when: security_uid_zero.stdout | trim | length > 0
+  tags: [security, verify]

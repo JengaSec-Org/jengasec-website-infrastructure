@@ -1,0 +1,30 @@
+---
+# ansible-lint configuration for JengaSec Infrastructure.
+# Run with: ansible-lint
+
+profile: moderate
+
+exclude_paths:
+  - .venv/
+  - collections/
+  - logs/
+  - .facts_cache/
+  - tests/
+
+skip_list:
+  # Phase 4-9 roles are intentional stubs; they have no tasks to name yet.
+  - name[missing]
+  # We pin package versions through variables, not inline in tasks.
+  - package-latest
+  # meta/main.yml galaxy_info is present but this repo is never published to Galaxy.
+  - meta-no-info
+
+warn_list:
+  - experimental
+  - yaml[line-length]
+
+# Every role in this repo is namespaced by directory, not by collection.
+mock_roles: []
+mock_modules: []
+
+use_default_rules: true

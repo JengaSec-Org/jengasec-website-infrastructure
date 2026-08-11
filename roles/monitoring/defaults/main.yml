@@ -1,0 +1,21 @@
+---
+# Defaults for the `monitoring` role — Phase 7.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+monitoring_enabled: false
+
+prometheus_version: "2.53.0"
+prometheus_retention_time: "30d"
+# cap it; server3 is not large
+prometheus_retention_size: "8GB"
+prometheus_scrape_interval: "30s"
+# derived from the inventory, never hand-listed
+prometheus_scrape_targets: "{{ groups['monitored'] | default([]) }}"
+node_exporter_version: "1.8.2"
+node_exporter_port: 9100
+grafana_admin_user: "admin"
+grafana_anonymous_access: false

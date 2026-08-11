@@ -1,0 +1,18 @@
+---
+# Defaults for the `logging` role — Phase 7.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+logging_enabled: false
+
+# an uncapped journal fills the disk
+logging_journald_max_use: "500M"
+logging_journald_max_retention: "30day"
+logging_logrotate_frequency: daily
+logging_logrotate_rotate: 14
+logging_logrotate_compress: true
+logging_remote_enabled: false
+logging_remote_host: ""

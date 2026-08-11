@@ -1,0 +1,10 @@
+# {{ common_managed_banner }}
+#
+# Which interfaces the DHCP server binds to — /etc/default/isc-dhcp-server
+#
+# This is the setting that decides whose network you are answering on. Leaving
+# it empty makes the daemon listen on every interface, which on a machine with
+# more than one NIC means serving addresses to a network you do not own.
+
+INTERFACESv4="{{ dhcp_interfaces | join(' ') }}"
+INTERFACESv6=""

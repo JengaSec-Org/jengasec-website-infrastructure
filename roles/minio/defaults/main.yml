@@ -1,0 +1,19 @@
+---
+# Defaults for the `minio` role — Phase 8.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+minio_enabled: false
+
+minio_version: "latest"
+minio_data_dir: "/srv/minio"
+minio_api_port: 9000
+minio_console_port: 9001
+# list of dicts: name, policy, versioning
+minio_buckets: []
+minio_root_user: "jengasec"
+# add the key to vault.yml before enabling
+minio_root_password: "{{ vault_minio_root_password | default(omit) }}"

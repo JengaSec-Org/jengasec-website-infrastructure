@@ -1,0 +1,136 @@
+# {{ common_managed_banner }}
+#
+# sshd configuration for {{ inventory_hostname }}.
+#
+# This file is AUTHORITATIVE: it deliberately does not include
+# /etc/ssh/sshd_config.d/*.conf. Everything sshd does is described here, in one
+# place, which is what you want when you are reading it at 3am trying to work
+# out why someone can or cannot log in.
+#
+# Every value comes from roles/ssh/defaults/main.yml or your group_vars.
+# Validated with `sshd -t` before this file replaces the live one.
+#
+# Inspect what sshd actually resolved:  sudo sshd -T
+
+# ── Network ─────────────────────────────────────────────────────────────────
+Port {{ ssh_port }}
+AddressFamily inet
+ListenAddress 0.0.0.0
+
+# ── Host keys ───────────────────────────────────────────────────────────────
+# Ed25519 first. DSA and ECDSA are omitted entirely.
+{% for key in ssh_host_keys %}
+HostKey {{ key }}
+{% endfor %}
+
+# ── Cryptography ────────────────────────────────────────────────────────────
+# Modern algorithms only. Anything with a known weakness is excluded, which
+# means very old clients will fail to connect — an accepted trade.
+KexAlgorithms {{ ssh_kex_algorithms | join(',') }}
+Ciphers {{ ssh_ciphers | join(',') }}
+MACs {{ ssh_macs | join(',') }}
+HostKeyAlgorithms {{ ssh_host_key_algorithms | join(',') }}
+
+# ── Authentication ──────────────────────────────────────────────────────────
+# The most important line in this file. With passwords off, the password
+# brute-forcing that makes up almost all SSH attack traffic cannot succeed
+# regardless of how weak any account's password is.
+PasswordAuthentication {{ 'yes' if ssh_password_authentication else 'no' }}
+PubkeyAuthentication {{ 'yes' if ssh_pubkey_authentication else 'no' }}
+PermitEmptyPasswords {{ 'yes' if ssh_permit_empty_passwords else 'no' }}
+# KbdInteractiveAuthentication only. The old ChallengeResponseAuthentication
+# name is a deprecated alias on OpenSSH 8.7+ (Debian 12 ships 9.2) and setting
+# both is redundant.
+KbdInteractiveAuthentication {{ 'yes' if ssh_challenge_response_authentication else 'no' }}
+
+# 'no', not 'prohibit-password'. A key-based root login would still be
+# anonymous — you would lose the record of which person did it. Log in as
+# yourself and use sudo, which is logged per account.
+PermitRootLogin {{ ssh_permit_root_login }}
+
+KerberosAuthentication {{ 'yes' if ssh_kerberos_authentication else 'no' }}
+GSSAPIAuthentication {{ 'yes' if ssh_gssapi_authentication else 'no' }}
+HostbasedAuthentication {{ 'yes' if ssh_host_based_authentication else 'no' }}
+IgnoreRhosts {{ 'yes' if ssh_ignore_rhosts else 'no' }}
+
+# Refuse keys in a world-writable ~/.ssh — otherwise anyone who can write there
+# can add their own key to someone else's account.
+StrictModes {{ 'yes' if ssh_strict_modes else 'no' }}
+
+UsePAM {{ 'yes' if ssh_use_pam else 'no' }}
+
+# ── Access control ──────────────────────────────────────────────────────────
+# A new account cannot log in until it joins one of these groups. Service
+# accounts therefore never become login accounts by accident.
+{% if ssh_allow_groups %}
+AllowGroups {{ ssh_allow_groups | join(' ') }}
+{% endif %}
+{% if ssh_allow_users %}
+AllowUsers {{ ssh_allow_users | join(' ') }}
+{% endif %}
+{% if ssh_deny_users %}
+DenyUsers {{ ssh_deny_users | join(' ') }}
+{% endif %}
+
+# ── Brute-force resistance ──────────────────────────────────────────────────
+MaxAuthTries {{ ssh_max_auth_tries }}
+MaxSessions {{ ssh_max_sessions }}
+# start:rate:full — begin dropping unauthenticated connections at {{ ssh_max_startups.split(':')[0] }},
+# refuse all at {{ ssh_max_startups.split(':')[2] }}. Bounds a connection flood.
+MaxStartups {{ ssh_max_startups }}
+LoginGraceTime {{ ssh_login_grace_time }}
+
+# ── Idle sessions ───────────────────────────────────────────────────────────
+# Disconnect after {{ (ssh_client_alive_interval * ssh_client_alive_count_max / 60) | int }} minutes idle.
+# An abandoned sudo-capable terminal in a shared lab is a real risk.
+ClientAliveInterval {{ ssh_client_alive_interval }}
+ClientAliveCountMax {{ ssh_client_alive_count_max }}
+TCPKeepAlive {{ 'yes' if ssh_tcp_keep_alive else 'no' }}
+
+# ── Forwarding ──────────────────────────────────────────────────────────────
+# Agent forwarding is off for a specific reason: with it on, anyone who controls
+# this server can use your loaded key against every other machine that trusts
+# it, for as long as you are connected. Use ProxyJump instead.
+AllowAgentForwarding {{ 'yes' if ssh_allow_agent_forwarding else 'no' }}
+AllowTcpForwarding {{ 'yes' if ssh_allow_tcp_forwarding else 'no' }}
+X11Forwarding {{ 'yes' if ssh_x11_forwarding else 'no' }}
+PermitTunnel {{ 'yes' if ssh_permit_tunnel else 'no' }}
+GatewayPorts {{ 'yes' if ssh_gateway_ports else 'no' }}
+
+# Stops a user setting LD_PRELOAD or PYTHONPATH via ~/.ssh/environment.
+PermitUserEnvironment {{ 'yes' if ssh_permit_user_environment else 'no' }}
+
+# Pre-authentication compression has a poor history. Only after auth, if at all.
+Compression {{ ssh_compression }}
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# VERBOSE records the key fingerprint used for each login. At INFO you can see
+# that 'jengasec' logged in but not WHICH key — and therefore not which person.
+# fail2ban's sshd jail also depends on this level.
+SyslogFacility {{ ssh_syslog_facility }}
+LogLevel {{ ssh_log_level }}
+
+# ── Session ─────────────────────────────────────────────────────────────────
+{% if ssh_banner_enabled %}
+# Displayed BEFORE authentication. Notice of monitoring is what makes the
+# resulting logs usable in a disciplinary process in many jurisdictions.
+Banner {{ ssh_banner_path }}
+{% endif %}
+
+# PAM already prints the MOTD; enabling both prints it twice.
+PrintMotd {{ 'yes' if ssh_print_motd else 'no' }}
+
+# "Last login: ... from ..." — the cheapest intrusion detection there is,
+# because the legitimate user notices a login they did not make.
+PrintLastLog {{ 'yes' if ssh_print_last_log else 'no' }}
+
+AcceptEnv {{ ssh_accept_env }}
+
+# internal-sftp rather than the external binary: it runs in the sshd process,
+# needs no shell, and can be chrooted.
+Subsystem sftp {{ ssh_subsystem_sftp }}
+
+# ── Notes ───────────────────────────────────────────────────────────────────
+# There is intentionally no `Include /etc/ssh/sshd_config.d/*.conf` here.
+# Anything in that directory is NOT read. The ssh role reports leftover files
+# during a run so they do not sit there looking meaningful.

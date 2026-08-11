@@ -1,0 +1,75 @@
+---
+# Defaults for the `firewall` role — Phase 2. UFW.
+#
+# The ruleset is DATA, not code. Rules come from three lists that this role
+# merges, so adding a port is an edit to group_vars and never to a task:
+#
+#   firewall_rules_common   group_vars/all         — every host (SSH)
+#   firewall_rules_group    group_vars/<group>     — per function (80, 5432, 53)
+#   firewall_rules_host     host_vars/<host>       — one machine only
+#
+# Rule fields:
+#   port     number, or "6000:6010" for a range
+#   proto    tcp | udp
+#   from     source CIDR or address, or "any"
+#   comment  shown in `ufw status` — always explain WHY
+#   direction  in | out   (defaults to in)
+
+# ── Master switch ───────────────────────────────────────────────────────────
+firewall_enabled: true
+
+# ── Default policy ──────────────────────────────────────────────────────────
+# Deny everything inbound, allow everything outbound. Anything that should be
+# reachable is listed explicitly — a firewall whose default is allow is a
+# documentation exercise, not a control.
+firewall_default_incoming: deny
+firewall_default_outgoing: allow
+firewall_default_routed: deny        # these are servers, not routers
+
+# ── Rules ───────────────────────────────────────────────────────────────────
+# Empty here on purpose. Real values live in group_vars, where they belong to a
+# function rather than to this role.
+firewall_rules_common: []
+firewall_rules_group: []
+firewall_rules_host: []
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# 'low' logs blocked packets only. 'medium' and above log accepted traffic too,
+# which on a competition network fills the disk within hours and drowns the
+# entries you actually wanted.
+firewall_logging: "low"
+
+# ── Rate limiting ───────────────────────────────────────────────────────────
+# UFW's limit rule drops a source that opens more than 6 connections in 30
+# seconds. Useful on SSH even with password auth disabled — it keeps the log
+# readable by cutting off the constant background scanning.
+#
+# It uses the iptables recent module, which tracks source addresses in kernel
+# memory. Do not apply it to a port serving real traffic: legitimate users
+# behind one NAT address would trip it collectively.
+firewall_rate_limit_ssh: true
+
+# ── IPv6 ────────────────────────────────────────────────────────────────────
+# Matches the networking role's default. If you enable IPv6 there, enable it
+# here too — otherwise the host has an unfiltered v6 address, which is strictly
+# worse than having no firewall at all, because you believe you are protected.
+firewall_ipv6: false
+
+# ── Safety ──────────────────────────────────────────────────────────────────
+# Refuse to run if the merged ruleset does not permit the SSH port. Turning this
+# off is how a competition ends early. It exists because "enable the firewall
+# and lock yourself out of the server" is the single most common way this role
+# goes wrong, everywhere, for everyone.
+firewall_require_ssh_rule: true
+
+# Applied before `ufw enable`, always, regardless of rule ordering. Belt and
+# braces alongside the assert above.
+firewall_ssh_port: "{{ ssh_port | default(22) }}"
+
+# ── Application ordering ────────────────────────────────────────────────────
+# true resets UFW and rebuilds the ruleset from this repository, making it the
+# single source of truth and removing anything added by hand.
+#
+# The reset briefly leaves the host with no rules, so it is off by default. Use
+# it deliberately, with console access, when the live ruleset has drifted.
+firewall_reset_before_apply: false

@@ -1,0 +1,58 @@
+---
+# Variables for the `dns` group — Bind9 authoritative + resolver (server2).
+#
+# Adding a hostname to the network is an edit to dns_records below. You should
+# never need to open the dns role itself to add a record.
+
+firewall_rules_group:
+  - port: 53
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (TCP — zone transfers and large responses)"
+  - port: 53
+    proto: udp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (UDP — normal queries)"
+
+# ── Resolver behaviour ──────────────────────────────────────────────────────
+# Recursion is offered ONLY to the competition LAN. An open recursive resolver
+# on a public interface is an amplification weapon — never widen this.
+dns_recursion_allowed_from:
+  - "{{ jengasec_network_cidr }}"
+  - "localhost"
+
+dns_forwarders:
+  - 1.1.1.1                              # TODO: replace with the campus resolvers
+  - 8.8.8.8
+
+# ── Zones ───────────────────────────────────────────────────────────────────
+dns_zone: "{{ jengasec_domain }}"
+dns_zone_ttl: 3600
+dns_zone_admin_email: "sucybersec.strathmore.edu"   # '@' becomes '.' in SOA records
+
+# Reverse zone for 10.0.0.0/24 — the octets are reversed, minus the host part.
+dns_reverse_zone: "0.0.10.in-addr.arpa"   # TODO: replace to match your CIDR
+dns_reverse_prefix: "10.0.0"              # TODO: replace
+
+# Forward records. `name` is relative to the zone; use '@' for the zone apex.
+dns_records:
+  - { name: "@",         type: A,     value: "10.0.0.12" }          # TODO: replace
+  - { name: "ns1",       type: A,     value: "10.0.0.12" }          # TODO: replace
+  - { name: "server1",   type: A,     value: "10.0.0.11" }          # TODO: replace
+  - { name: "server2",   type: A,     value: "10.0.0.12" }          # TODO: replace
+  - { name: "server3",   type: A,     value: "10.0.0.13" }          # TODO: replace
+  - { name: "platform",  type: CNAME, value: "server1" }            # the Django app
+  - { name: "db",        type: CNAME, value: "server2" }
+  - { name: "backup",    type: CNAME, value: "server3" }
+  - { name: "grafana",   type: CNAME, value: "server3" }
+  - { name: "prometheus", type: CNAME, value: "server3" }
+
+# PTR records, generated from the last octet.
+dns_reverse_records:
+  - { octet: "11", name: "server1.{{ jengasec_domain }}." }         # TODO: replace
+  - { octet: "12", name: "server2.{{ jengasec_domain }}." }         # TODO: replace
+  - { octet: "13", name: "server3.{{ jengasec_domain }}." }         # TODO: replace
+
+# Zone transfers are refused by default. Add a secondary's address here only if
+# you actually run one.
+dns_allow_transfer: []

@@ -1,0 +1,29 @@
+# {{ common_managed_banner }}
+#
+# Global pip configuration.
+#
+# Note that Debian 12 marks the system Python as externally managed (PEP 668),
+# so `pip install` outside a virtualenv is refused. That is correct and this
+# file does not work around it — application dependencies belong in the
+# virtualenv the `django` role creates, never in system site-packages. Mixing
+# pip and apt packages in /usr/lib/python3 is how you get a machine where apt
+# and pip each believe they own a different version of the same library.
+
+[global]
+index-url = {{ python_pip_index_url }}
+timeout = {{ python_pip_timeout }}
+retries = {{ python_pip_retries }}
+
+# Do not read ~/.pip/pip.conf on top of this — a per-user index URL is a supply
+# chain risk nobody would think to check.
+require-virtualenv = false
+
+# Fail loudly on a hash mismatch rather than installing anyway.
+disable-pip-version-check = true
+
+[install]
+# Never install as root outside a virtualenv without being explicit about it.
+{% if python_pip_break_system_packages %}
+break-system-packages = true
+{% endif %}
+compile = true

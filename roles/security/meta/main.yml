@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: security
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Host hardening mapped to the CIS Debian 12 Benchmark.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - security
+    - hardening
+    - cis
+
+# The umbrella role. These three are genuine dependencies rather than ordering:
+# "harden this host" is not complete without intrusion prevention, audit
+# logging, and correct file permissions, so running `security` pulls them in.
+#
+# Ansible runs dependencies BEFORE the parent role's own tasks.
+dependencies:
+  - role: fail2ban
+  - role: audit
+  - role: filesystem-security

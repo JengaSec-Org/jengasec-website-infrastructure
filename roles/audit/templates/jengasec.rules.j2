@@ -1,0 +1,164 @@
+## {{ common_managed_banner }}
+##
+## auditd rules for {{ inventory_hostname }}
+##
+## Loaded by augenrules from /etc/audit/rules.d/, in lexical order.
+##
+## Every rule carries a -k key. The key is what makes the log searchable:
+##     ausearch -k jengasec_identity
+##     aureport -k
+## A rule without a key still records, but finding it later means reading raw
+## audit output, which nobody does twice.
+##
+## Read the log:  sudo ausearch -k <key> -i        (-i decodes numeric IDs)
+## Summarise:     sudo aureport --summary
+
+## ── Reset ──────────────────────────────────────────────────────────────────
+## Delete any previously loaded rule so this file is authoritative.
+-D
+
+## Kernel buffer for pending events. Too small and events are dropped silently
+## under load — which is exactly when you need them.
+-b {{ audit_buffer_size }}
+
+## Behaviour on buffer overflow: 0 silent, 1 printk, 2 panic.
+## 2 is the strict answer and it means a burst of audit events halts the
+## competition platform. 1 keeps the server up and leaves evidence in the kernel
+## log that events were lost.
+-f {{ audit_failure_mode }}
+
+## Rate limit: 0 = unlimited. A cap here would drop events during exactly the
+## flood an attacker generates.
+-r 0
+
+## ── Noise exclusions ───────────────────────────────────────────────────────
+## Every exclusion is a deliberate blind spot. Keep this list short.
+{% for path in audit_exclude_paths %}
+-a never,exit -F dir={{ path }} -F perm=rwxa
+{% endfor %}
+{% if audit_watch_authentication %}
+
+## ── Authentication ─────────────────────────────────────────────────────────
+## Who logged in, who failed, from where.
+-w /var/log/lastlog -p wa -k jengasec_logins
+-w /var/run/faillock -p wa -k jengasec_logins
+-w /var/log/wtmp -p wa -k jengasec_session
+-w /var/log/btmp -p wa -k jengasec_session
+-w /var/run/utmp -p wa -k jengasec_session
+
+## sudo and su invocations, and any change to what they permit.
+-w /var/log/sudo.log -p wa -k jengasec_sudo
+-w /etc/sudoers -p wa -k jengasec_sudo
+-w /etc/sudoers.d/ -p wa -k jengasec_sudo
+{% endif %}
+{% if audit_watch_privilege_escalation %}
+
+## ── Privilege escalation ───────────────────────────────────────────────────
+## Every execution of a setuid or setgid binary by a real user.
+##
+## auid>=1000 restricts this to logged-in humans; auid!=unset excludes daemons
+## with no login session. Without both filters this rule produces enormous
+## volume and you end up disabling the one rule most worth having.
+-a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k jengasec_privesc
+-a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k jengasec_privesc
+
+## Failed attempts to gain privilege — EACCES and EPERM on file access.
+-a always,exit -F arch=b64 -S open,openat,truncate,ftruncate,creat -F exit=-EACCES -F auid>=1000 -F auid!=unset -k jengasec_access
+-a always,exit -F arch=b64 -S open,openat,truncate,ftruncate,creat -F exit=-EPERM -F auid>=1000 -F auid!=unset -k jengasec_access
+{% endif %}
+{% if audit_watch_user_management %}
+
+## ── User and group management ──────────────────────────────────────────────
+## Adding an account, changing a password, or editing group membership.
+## A new account nobody created is one of the clearest signs of persistence.
+-w /etc/passwd -p wa -k jengasec_identity
+-w /etc/shadow -p wa -k jengasec_identity
+-w /etc/group -p wa -k jengasec_identity
+-w /etc/gshadow -p wa -k jengasec_identity
+-w /etc/security/opasswd -p wa -k jengasec_identity
+
+-w /usr/sbin/useradd -p x -k jengasec_identity
+-w /usr/sbin/userdel -p x -k jengasec_identity
+-w /usr/sbin/usermod -p x -k jengasec_identity
+-w /usr/sbin/groupadd -p x -k jengasec_identity
+-w /usr/bin/passwd -p x -k jengasec_identity
+{% endif %}
+{% if audit_watch_system_config %}
+
+## ── System configuration ───────────────────────────────────────────────────
+-w /etc/ssh/sshd_config -p wa -k jengasec_config
+-w /etc/ssh/sshd_config.d/ -p wa -k jengasec_config
+-w /etc/hosts -p wa -k jengasec_config
+-w /etc/network/ -p wa -k jengasec_config
+-w /etc/resolv.conf -p wa -k jengasec_config
+-w /etc/sysctl.conf -p wa -k jengasec_config
+-w /etc/sysctl.d/ -p wa -k jengasec_config
+-w /etc/systemd/ -p wa -k jengasec_config
+-w /etc/cron.d/ -p wa -k jengasec_cron
+-w /etc/crontab -p wa -k jengasec_cron
+-w /var/spool/cron/ -p wa -k jengasec_cron
+
+## A change to the audit configuration itself is always worth knowing about.
+-w /etc/audit/ -p wa -k jengasec_auditconfig
+-w /etc/pam.d/ -p wa -k jengasec_pam
+{% endif %}
+{% if audit_watch_file_deletion %}
+
+## ── File deletion ──────────────────────────────────────────────────────────
+## Destroying evidence is usually the step after gaining access. Restricted to
+## real users (auid>=1000) — system daemons delete files constantly.
+-a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=unset -k jengasec_delete
+-a always,exit -F arch=b32 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=unset -k jengasec_delete
+{% endif %}
+{% if audit_watch_permission_changes %}
+
+## ── Permission changes ─────────────────────────────────────────────────────
+## Making a file world-writable, or setting setuid on a copied shell, is a
+## standard persistence step.
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k jengasec_perm
+-a always,exit -F arch=b64 -S chown,fchown,fchownat,lchown -F auid>=1000 -F auid!=unset -k jengasec_perm
+-a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr -F auid>=1000 -F auid!=unset -k jengasec_perm
+{% endif %}
+{% if audit_watch_module_loading %}
+
+## ── Kernel modules ─────────────────────────────────────────────────────────
+## Loading a module is how a kernel rootkit arrives. There is no legitimate
+## reason for this to happen on these servers after provisioning.
+-w /sbin/insmod -p x -k jengasec_modules
+-w /sbin/rmmod -p x -k jengasec_modules
+-w /sbin/modprobe -p x -k jengasec_modules
+-a always,exit -F arch=b64 -S init_module,delete_module,finit_module -k jengasec_modules
+{% endif %}
+{% if audit_watch_time_changes %}
+
+## ── System time ────────────────────────────────────────────────────────────
+## Moving the clock breaks correlation between these logs and everyone else's,
+## which is precisely why someone would do it.
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k jengasec_time
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime -k jengasec_time
+-w /etc/localtime -p wa -k jengasec_time
+{% endif %}
+{% if audit_watch_mount %}
+
+## ── Mounts ─────────────────────────────────────────────────────────────────
+## Mounting a device is how data leaves a machine that has no network path out.
+-a always,exit -F arch=b64 -S mount,umount2 -F auid>=1000 -F auid!=unset -k jengasec_mount
+{% endif %}
+{% if audit_watch_application %}
+
+## ── JengaSec application data ──────────────────────────────────────────────
+## The competition-specific rules, and the reason this role earns its place.
+##
+## Reading a submission before the deadline, or altering a score after it, is
+## exactly the kind of thing this event exists to detect. These paths hold the
+## evidence.
+{% for path in audit_application_paths %}
+-w {{ path }} -p wa -k jengasec_appdata
+{% endfor %}
+{% endif %}
+
+## ── Immutable flag ─────────────────────────────────────────────────────────
+## NOT set here. It lives in 99-jengasec-immutable.rules so it loads last —
+## the kernel refuses every rule that comes after it, so a rule file added later
+## would be silently ignored if it were at the end of this file.
+## Controlled by audit_immutable in defaults/main.yml.

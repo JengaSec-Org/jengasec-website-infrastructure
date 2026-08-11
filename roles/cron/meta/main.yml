@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: cron
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Scheduled maintenance jobs.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+
+dependencies: []

@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: users
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Service accounts, groups, SSH keys, and sudo policy.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - identity
+
+# Nothing declared here on purpose. `users` must run before `ssh`, but that is
+# ordering, not dependency — expressing it as a meta dependency would pull the
+# ssh role in wherever users is used. The ordering is enforced where it belongs:
+# in playbooks/bootstrap.yml, where users is listed before ssh.
+dependencies: []

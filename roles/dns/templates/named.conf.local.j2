@@ -1,0 +1,43 @@
+// {{ common_managed_banner }}
+//
+// Zone declarations for {{ inventory_hostname }}.
+// The zone DATA is in {{ dns_zone_dir }}/ — this file only says which zones
+// exist and where to find them.
+
+// ── Forward zone ───────────────────────────────────────────────────────────
+zone "{{ dns_zone }}" {
+    type master;
+    file "{{ dns_zone_dir }}/db.{{ dns_zone }}";
+
+    // Refuse updates and transfers per-zone as well as globally. Belt and
+    // braces: a later edit to named.conf.options should not silently open this.
+    allow-update { none; };
+{% if dns_allow_transfer %}
+    allow-transfer {
+{% for source in dns_allow_transfer %}
+        {{ source }};
+{% endfor %}
+    };
+{% else %}
+    allow-transfer { none; };
+{% endif %}
+{% if dns_also_notify %}
+    also-notify {
+{% for target in dns_also_notify %}
+        {{ target }};
+{% endfor %}
+    };
+{% endif %}
+};
+{% if dns_reverse_enabled %}
+
+// ── Reverse zone ───────────────────────────────────────────────────────────
+// Turns an address back into a name. Worth having: log entries, mail servers,
+// and `ssh -v` all become far more readable when PTR records resolve.
+zone "{{ dns_reverse_zone }}" {
+    type master;
+    file "{{ dns_zone_dir }}/db.{{ dns_reverse_zone }}";
+    allow-update { none; };
+    allow-transfer { none; };
+};
+{% endif %}

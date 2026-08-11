@@ -1,0 +1,17 @@
+---
+# Handlers for the `systemd` role.
+
+# Re-reads unit files. Needed after adding or changing any unit — systemd does
+# not notice a new file on its own, and the symptom is a confusing
+# "Unit not found" for a file you can plainly see on disk.
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "reload systemd"
+
+# Re-executes PID 1 in place so it picks up /etc/systemd/system.conf changes.
+# Running services are not affected — this is not a reboot.
+- name: Reexec systemd
+  ansible.builtin.systemd:
+    daemon_reexec: true
+  listen: "reexec systemd"

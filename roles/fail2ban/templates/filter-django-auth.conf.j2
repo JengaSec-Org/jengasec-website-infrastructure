@@ -1,0 +1,44 @@
+# {{ common_managed_banner }}
+#
+# fail2ban filter for Django authentication failures.
+#
+# THIS FILTER ONLY WORKS IF DJANGO LOGS FAILURES WITH THE CLIENT IP.
+#
+# Django does not do that out of the box. The platform needs a logger that
+# writes a line containing the address on each failed login — for example, a
+# receiver on the django.contrib.auth.signals.user_login_failed signal:
+#
+#     import logging
+#     from django.dispatch import receiver
+#     from django.contrib.auth.signals import user_login_failed
+#
+#     logger = logging.getLogger("jengasec.auth")
+#
+#     @receiver(user_login_failed)
+#     def log_failed_login(sender, credentials, request, **kwargs):
+#         ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() \
+#              or request.META.get("REMOTE_ADDR", "")
+#         logger.warning(
+#             "Authentication failure for %s from %s",
+#             credentials.get("username", "unknown"), ip,
+#         )
+#
+# Note the X-Forwarded-For handling: behind nginx, REMOTE_ADDR is 127.0.0.1 for
+# every request, so without it this jail would ban the loopback address and lock
+# out every user at once.
+#
+# Test the filter against a real log before trusting it:
+#     fail2ban-regex {{ fail2ban_django_logpath }} /etc/fail2ban/filter.d/django-auth.conf
+
+[Definition]
+
+# <HOST> is fail2ban's placeholder for the address to ban.
+failregex = ^.*Authentication failure for .* from <HOST>.*$
+            ^.*Invalid login attempt .* from <HOST>.*$
+            ^.*Failed login for '.*' from <HOST>.*$
+
+# Lines to ignore even if they match above.
+ignoreregex =
+
+# Matches Django's default log timestamp format.
+datepattern = ^%%Y-%%m-%%d %%H:%%M:%%S

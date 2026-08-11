@@ -1,0 +1,22 @@
+---
+# Defaults for the `django` role — Phase 4.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+django_enabled: false
+
+# matches the platform layout
+django_settings_module: "config.settings"
+# MUST stay false in production
+django_debug: false
+# set per host group
+django_allowed_hosts: []
+django_run_migrations: true
+django_collectstatic: true
+# create the first admin by hand, interactively
+django_superuser_create: false
+django_env_file: "{{ app_root }}/.env"
+django_email_backend: "django.core.mail.backends.smtp.EmailBackend"

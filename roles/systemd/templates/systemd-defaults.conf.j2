@@ -1,0 +1,35 @@
+# {{ common_managed_banner }}
+#
+# systemd manager defaults for {{ inventory_hostname }}.
+#
+# Resource limits (DefaultLimitNOFILE, DefaultLimitCORE) are set by the `os`
+# role in 60-jengasec-limits.conf — deliberately not repeated here, so there is
+# exactly one place to change them.
+
+[Manager]
+# Bound how long a job may block boot or shutdown. Debian's default is 90s per
+# job; on a host with several services that becomes a long wait while you are
+# standing in the server room during a reboot.
+DefaultTimeoutStartSec={{ systemd_default_timeout_start_sec }}s
+DefaultTimeoutStopSec={{ systemd_default_timeout_stop_sec }}s
+
+# Restart a failed service, but give up if it keeps failing rather than looping
+# forever — a service crash-looping every 100ms produces a gigabyte of journal
+# and hides whatever actually went wrong.
+DefaultRestartSec=5s
+DefaultStartLimitIntervalSec=60s
+DefaultStartLimitBurst=5
+{% if systemd_accounting_enabled %}
+
+# Per-service CPU and memory accounting, so `systemctl status gunicorn` and
+# `systemd-cgtop` show real figures. Slight overhead, and worth it when you are
+# trying to find what is eating a 4 GB box mid-competition.
+DefaultCPUAccounting=yes
+DefaultMemoryAccounting=yes
+DefaultIOAccounting=yes
+DefaultTasksAccounting=yes
+{% endif %}
+
+# Cap on processes per unit. Stops a fork bomb in one service — or a runaway
+# gunicorn worker loop — from taking the whole machine down with it.
+DefaultTasksMax=4096

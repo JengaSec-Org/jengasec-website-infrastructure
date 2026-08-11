@@ -1,0 +1,100 @@
+---
+# Defaults for the `users` role — Phase 1.
+# Service accounts, SSH keys, groups, and sudo policy.
+#
+# This role runs BEFORE `ssh`, always. The ssh role disables password
+# authentication, so if no key has been installed first, the next connection
+# attempt fails and the host is unreachable.
+
+# ── Service accounts ────────────────────────────────────────────────────────
+# Normally set in group_vars/all. This default exists so the role is runnable
+# on its own and so `--check` against a bare inventory still works.
+#
+# Fields per account:
+#   name           login name (required)
+#   comment        GECOS description
+#   groups         supplementary groups
+#   shell          /bin/bash for humans, /usr/sbin/nologin for daemons
+#   system         true creates a system account (UID < 1000, no ageing)
+#   sudo_nopasswd  true allows passwordless sudo — only with sudo_commands set
+#   sudo_commands  exact commands allowed; omit for full sudo
+#   ssh_keys       public key filenames from files/ssh-keys/
+users_service_accounts:
+  - name: jengasec
+    comment: "JengaSec administrator"
+    groups: [sudo, adm]
+    shell: /bin/bash
+    system: false
+    sudo_nopasswd: false
+
+# ── Groups ──────────────────────────────────────────────────────────────────
+# Created before the accounts, so a group listed above always exists.
+users_groups:
+  - name: jengasec
+    system: false
+
+# ── SSH keys ────────────────────────────────────────────────────────────────
+# Filenames in files/ssh-keys/, installed for the administrator account.
+users_admin_ssh_keys: []
+
+# Which account receives users_admin_ssh_keys.
+users_admin_account: jengasec
+
+# Directory in the repository holding the public keys.
+users_ssh_key_dir: ssh-keys
+
+# ── Key hygiene ─────────────────────────────────────────────────────────────
+# true makes authorized_keys match this repository exactly, removing any key
+# added by hand. That is the correct end state — an SSH key nobody can account
+# for is exactly what a persistent intruder leaves behind.
+#
+# It stays false by default because turning it on before every teammate's key is
+# committed will lock them out. Turn it on once the key list is complete, and
+# treat that as a milestone.
+users_ssh_exclusive: false
+
+# ── Password policy ─────────────────────────────────────────────────────────
+# Accounts are key-only. A locked password still permits key login and sudo; it
+# only prevents password authentication.
+users_lock_passwords: true
+
+# Accounts that need a real password (console access when SSH is down) set
+# password_hash per account, sourced from the vault.
+users_password_ageing:
+  max_days: 90
+  min_days: 7
+  warn_age: 14
+
+# ── Sudo ────────────────────────────────────────────────────────────────────
+# Written as one file per account under /etc/sudoers.d/. /etc/sudoers itself is
+# never edited: a syntax error there locks everyone out of root on a machine you
+# may only be able to reach over SSH. Every file is validated with visudo before
+# it is put in place.
+users_sudoers_dir: /etc/sudoers.d
+
+# Require a password for sudo by default. Individual accounts opt out only in
+# combination with an explicit command list.
+users_sudo_requires_password: true
+
+# Log every sudo invocation to its own file, separate from the journal, so it
+# survives journal rotation and is easy to hand to an incident reviewer.
+users_sudo_logfile: /var/log/sudo.log
+
+# Full session capture — every keystroke and all output, replayable later with
+# `sudoreplay`. Genuinely useful for a club running forensics exercises, but it
+# writes megabytes per busy session and these servers have small disks. Turn it
+# on deliberately, and watch /var/log/sudo-io if you do.
+users_sudo_io_logging: false
+
+# ── Home directories ────────────────────────────────────────────────────────
+users_home_mode: "0750"       # not world-readable
+users_create_home: true
+
+# ── Removal ─────────────────────────────────────────────────────────────────
+# Accounts to remove, e.g. a decommissioned member. Listed explicitly rather
+# than inferred, so nobody is deleted by accident.
+#
+# Home directories are NOT deleted — the account loses access immediately, and
+# whatever was in the home directory can still be reviewed. Remove it by hand
+# once you are sure.
+users_absent: []

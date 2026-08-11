@@ -1,0 +1,17 @@
+---
+# Handlers for the `common` role.
+
+- name: Restart timesyncd
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: restarted
+  listen: "restart timesyncd"
+
+# cron caches the timezone at start, so it keeps firing jobs on the old offset
+# until it is restarted. Easy to miss, and it makes scheduled backups run at
+# the wrong hour.
+- name: Restart cron
+  ansible.builtin.systemd:
+    name: cron
+    state: restarted
+  listen: "restart cron"

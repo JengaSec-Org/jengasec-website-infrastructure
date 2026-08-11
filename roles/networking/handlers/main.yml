@@ -1,0 +1,29 @@
+---
+# Handlers for the `networking` role.
+
+# `ifup --force` on the single interface, rather than restarting the whole
+# networking service.
+#
+# `systemctl restart networking` brings every interface down and back up. If
+# anything in the new configuration is wrong, the interface does not come back
+# — and neither does your SSH session, on a host that may be in a locked room.
+# Reconfiguring one named interface keeps the blast radius to that interface.
+#
+# async + poll: 0 detaches the command. The connection drops during the
+# reconfiguration, and without this Ansible would sit waiting for a reply on a
+# socket that no longer exists until the SSH timeout expires.
+- name: Restart networking
+  ansible.builtin.shell:
+    cmd: "ifdown {{ networking_interface }} --force; ifup {{ networking_interface }}"
+  args:
+    executable: /bin/bash
+  async: 15
+  poll: 0
+  listen: "restart networking"
+  changed_when: true
+
+- name: Wait for the host to come back
+  ansible.builtin.wait_for_connection:
+    delay: 5
+    timeout: 60
+  listen: "restart networking"

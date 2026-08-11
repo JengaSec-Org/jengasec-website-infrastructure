@@ -1,0 +1,13 @@
+---
+# Handlers for the `cron` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart cron
+  ansible.builtin.systemd:
+    name: "{{ cron_service_name | default('cron') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart cron"
+  when: cron_enabled | bool

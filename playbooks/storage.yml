@@ -1,0 +1,27 @@
+---
+# Phase 8 — Storage
+#
+# STATUS: both roles are stubs.
+#
+# `storage` covers filesystem layout and mount points and is worth implementing
+# early. `minio` is only needed if submission volume outgrows local disk —
+# object storage on a 4 GB server solves a problem this competition may never
+# have, so treat it as genuinely optional.
+
+- name: "Phase 8 — storage"
+  hosts: web
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: storage
+      tags: [storage]
+
+- name: "Phase 8 — object storage"
+  hosts: backup
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: minio
+      tags: [minio]

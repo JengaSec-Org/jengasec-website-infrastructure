@@ -1,0 +1,33 @@
+;
+; {{ common_managed_banner }}
+;
+; Reverse zone for {{ dns_reverse_zone }}  ({{ dns_reverse_prefix }}.0/24)
+;
+; Maps addresses back to names. Worth maintaining: log entries, `ssh -v` output,
+; and mail delivery all become far easier to read when PTR records resolve.
+;
+; The octet is the LAST part of the address only — {{ dns_reverse_prefix }}.11
+; is written as "11" here, because the zone name already carries the network
+; part, reversed.
+;
+; Targets must be fully qualified and end with a dot. A PTR without the trailing
+; dot silently becomes name.{{ dns_reverse_zone }}, which is a confusing way to
+; spend an afternoon.
+;
+; Check this file:  named-checkzone {{ dns_reverse_zone }} {{ dns_zone_dir }}/db.{{ dns_reverse_zone }}
+;
+$TTL {{ dns_zone_ttl }}
+@       IN      SOA     {{ dns_zone_primary_ns }}. {{ dns_zone_admin_email }}. (
+                        {{ dns_serial }}    ; Serial
+                        {{ dns_zone_refresh }}          ; Refresh
+                        {{ dns_zone_retry }}           ; Retry
+                        {{ dns_zone_expire }}         ; Expire
+                        {{ dns_zone_negative_ttl }} )         ; Negative cache TTL
+;
+@       IN      NS      {{ dns_zone_primary_ns }}.
+;
+; ── PTR records ────────────────────────────────────────────────────────────
+{% for record in dns_reverse_records %}
+{{ "%-6s"|format(record.octet) }}  IN      PTR     {{ record.name }}{% if not record.name.endswith('.') %}.{% endif %}
+
+{% endfor %}

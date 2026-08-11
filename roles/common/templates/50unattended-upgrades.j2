@@ -1,0 +1,67 @@
+// {{ common_managed_banner }}
+//
+// Automatic updates for JengaSec servers.
+//
+// Security patches only. The general updates pocket is deliberately excluded:
+// an unattended feature upgrade in the middle of the competition is a
+// self-inflicted outage, and there is no upside to taking that risk during the
+// two weeks that matter.
+
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+{% if not common_unattended_upgrades_security_only %}
+        // Wider updates enabled — common_unattended_upgrades_security_only is false.
+        "origin=Debian,codename=${distro_codename}-updates";
+{% endif %}
+};
+
+{% if common_unattended_upgrades_blacklist %}
+// Packages never upgraded automatically. Anything here must be patched by
+// hand, during a maintenance window, with someone watching.
+Unattended-Upgrade::Package-Blacklist {
+{% for pkg in common_unattended_upgrades_blacklist %}
+        "{{ pkg }}";
+{% endfor %}
+};
+{% else %}
+Unattended-Upgrade::Package-Blacklist {
+};
+{% endif %}
+
+// Only touch packages that are already installed.
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+
+// Never reboot on its own. A server that reboots unannounced during judging is
+// worse than one carrying a known, tracked, unpatched kernel.
+// Check for pending reboots instead:  ls /var/run/reboot-required
+Unattended-Upgrade::Automatic-Reboot "{{ 'true' if common_unattended_upgrades_auto_reboot else 'false' }}";
+{% if common_unattended_upgrades_auto_reboot %}
+Unattended-Upgrade::Automatic-Reboot-Time "03:00";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+{% endif %}
+
+{% if common_unattended_upgrades_mail %}
+// Report only failures — a nightly success email trains people to ignore it.
+Unattended-Upgrade::Mail "{{ common_unattended_upgrades_mail }}";
+Unattended-Upgrade::MailReport "on-change";
+{% endif %}
+
+// Keep going if a download fails rather than aborting the whole run.
+Unattended-Upgrade::MinimalSteps "true";
+
+// Retry a package left half-configured by an interrupted run.
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+
+// Keep the changelog of what was applied.
+Unattended-Upgrade::SyslogEnable "true";
+Unattended-Upgrade::SyslogFacility "daemon";
+
+// Never answer a config-file prompt on our behalf; leave the local version in
+// place and let a human decide. Ansible owns these files anyway.
+Dpkg::Options {
+        "--force-confdef";
+        "--force-confold";
+};

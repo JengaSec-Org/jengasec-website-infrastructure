@@ -1,0 +1,175 @@
+---
+# networking — Phase 2
+# Static addressing, DNS resolution, and static routes.
+#
+# WARNING: this role reconfigures the interface you are probably connected over.
+# See defaults/main.yml and docs/runbook.md.
+
+- name: Report that interface configuration is disabled
+  ansible.builtin.debug:
+    msg: >-
+      networking_configure is false, so {{ inventory_hostname }}'s interface is
+      left exactly as it is. Only /etc/hosts entries are managed. Set
+      networking_configure: true in host_vars once you have confirmed the
+      interface name and have console access. See roles/networking/README.md.
+  when: not networking_configure | bool
+  tags: [networking, always]
+
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Assert the interface configuration is complete
+  ansible.builtin.assert:
+    that:
+      - networking_interface | length > 0
+      - networking_address | length > 0
+      - networking_gateway | length > 0
+      - networking_dns_servers | length > 0
+    fail_msg: >-
+      Incomplete network configuration for {{ inventory_hostname }}. Applying a
+      partial configuration takes the host off the network. Set
+      networking_interface, networking_address, networking_gateway and
+      networking_dns_servers in
+      inventories/{{ jengasec_environment | default('production') }}/host_vars/{{ inventory_hostname }}.yml
+    success_msg: "Configuration complete for {{ networking_interface }}"
+  when:
+    - networking_configure | bool
+    - networking_method == 'static'
+  tags: [networking, always]
+
+# Catches the single most common mistake: assuming eth0 on a Debian 12 host that
+# actually calls its interface ens18. Applying a config to an interface that
+# does not exist takes the machine off the network with no error at apply time.
+- name: Confirm the interface actually exists
+  ansible.builtin.assert:
+    that:
+      - networking_interface in ansible_interfaces
+    fail_msg: >-
+      Interface '{{ networking_interface }}' does not exist on
+      {{ inventory_hostname }}. Available: {{ ansible_interfaces | join(', ') }}.
+      Debian 12 uses predictable names (ens18, enp0s3, eno1) — it is rarely
+      eth0. Fix networking_interface in host_vars.
+    success_msg: "Interface {{ networking_interface }} found"
+  when: networking_configure | bool
+  tags: [networking, always]
+
+# ── Interface configuration ─────────────────────────────────────────────────
+
+- name: Ensure the interfaces.d directory exists
+  ansible.builtin.file:
+    path: /etc/network/interfaces.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: networking_configure | bool
+  tags: [networking, interface]
+
+# ifupdown only reads interfaces.d if the main file sources it. The Debian
+# installer normally adds this line, but a minimal or preseeded install may not
+# — in which case the drop-in is written and silently ignored, which is a
+# miserable thing to debug.
+- name: Ensure /etc/network/interfaces sources the drop-in directory
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    line: "source /etc/network/interfaces.d/*"
+    regexp: '^source\s+/etc/network/interfaces\.d/\*'
+    state: present
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: networking_configure | bool
+  tags: [networking, interface]
+
+- name: Write the interface configuration
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces.d/50-jengasec.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  when: networking_configure | bool
+  notify: Restart networking
+  tags: [networking, interface]
+
+# ── DNS resolution ──────────────────────────────────────────────────────────
+
+- name: Configure the resolver
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  when:
+    - networking_configure | bool
+    - networking_manage_resolv_conf | bool
+  tags: [networking, dns]
+
+# ── Static host entries ─────────────────────────────────────────────────────
+
+# Applied whether or not networking_configure is set: they are safe, and a DNS
+# outage should not also be an application outage. Django reaching PostgreSQL by
+# name must not depend on Bind9 being up.
+- name: Add static entries for the other JengaSec servers
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED — jengasec hosts"
+    block: |
+      {% for entry in networking_hosts_entries %}
+      {{ entry.ip }} {{ entry.names | join(' ') }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - networking_manage_hosts_entries | bool
+    - networking_hosts_entries | length > 0
+  tags: [networking, hosts]
+
+# ── IPv6 ────────────────────────────────────────────────────────────────────
+
+- name: Disable IPv6
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    sysctl_file: /etc/sysctl.d/61-jengasec-ipv6.conf
+    state: present
+    reload: true
+  loop:
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+    - net.ipv6.conf.lo.disable_ipv6
+  when: not networking_ipv6_enabled | bool
+  tags: [networking, ipv6]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Apply pending network changes
+  ansible.builtin.meta: flush_handlers
+  tags: [networking]
+
+- name: Verify the gateway is reachable
+  ansible.builtin.command:
+    cmd: "ping -c 2 -W 3 {{ networking_verify_target }}"
+  register: networking_ping
+  changed_when: false
+  failed_when: networking_ping.rc != 0
+  when:
+    - networking_configure | bool
+    - networking_verify_after_change | bool
+    - networking_verify_target | length > 0
+  tags: [networking, verify]
+
+- name: Verify DNS resolution works
+  ansible.builtin.command:
+    cmd: "getent hosts {{ networking_dns_search | default('localhost') }}"
+  register: networking_resolve
+  changed_when: false
+  failed_when: false
+  when:
+    - networking_configure | bool
+    - networking_verify_after_change | bool
+  tags: [networking, verify]

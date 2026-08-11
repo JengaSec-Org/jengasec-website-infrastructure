@@ -1,0 +1,13 @@
+---
+# Handlers for the `logging` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart logging
+  ansible.builtin.systemd:
+    name: "{{ logging_service_name | default('logging') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart logging"
+  when: logging_enabled | bool

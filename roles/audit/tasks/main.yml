@@ -1,0 +1,147 @@
+---
+# audit — Phase 3. auditd.
+
+- name: Install auditd
+  ansible.builtin.apt:
+    name: "{{ audit_packages }}"
+    state: present
+  tags: [audit, packages]
+
+- name: Configure auditd
+  ansible.builtin.template:
+    src: auditd.conf.j2
+    dest: /etc/audit/auditd.conf
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart auditd
+  tags: [audit, config]
+
+# Once the rules are immutable, `augenrules --load` and any auditd restart that
+# reloads rules will fail until the machine reboots. That is the feature working
+# as intended, so the role reports it rather than failing the play.
+- name: Check whether the running ruleset is already immutable
+  ansible.builtin.command:
+    cmd: auditctl -s
+  register: audit_current_status
+  changed_when: false
+  failed_when: false
+  tags: [audit, rules]
+
+- name: Report that the ruleset is locked until reboot
+  ansible.builtin.debug:
+    msg: >-
+      The audit ruleset on {{ inventory_hostname }} is in immutable mode
+      (enabled 2). Rule changes cannot take effect until the host reboots. This
+      is expected once audit_immutable is on — schedule a reboot if you have
+      changed the rules.
+  when: "'enabled 2' in (audit_current_status.stdout | default(''))"
+  tags: [audit, rules]
+
+- name: Install the JengaSec audit rules
+  ansible.builtin.template:
+    src: jengasec.rules.j2
+    dest: /etc/audit/rules.d/50-jengasec.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load audit rules
+  tags: [audit, rules]
+
+# There is deliberately no `validate:` on the task above.
+#
+# The obvious candidate, `auditctl -R %s`, does not validate — it LOADS the
+# rules. Used as a validator it would apply them from a temporary file before
+# the real one exists, and with immutable mode in the file it would lock the
+# ruleset at validation time. `augenrules --load` in the handler reports syntax
+# errors and is the supported path on Debian.
+
+# The immutable flag has to be the LAST rule the kernel sees, because everything
+# after it is refused. augenrules concatenates /etc/audit/rules.d in lexical
+# order, so it goes in a 99- file rather than at the end of the 50- one — that
+# way a rule file added later still loads.
+- name: Set audit rules immutable
+  ansible.builtin.copy:
+    content: |
+      # {{ common_managed_banner }}
+      #
+      # Immutable mode. No audit rule can be added, removed, or changed until
+      # the machine reboots — including by root.
+      #
+      # This is the point: an attacker who gains root can otherwise simply turn
+      # off the logging that would record what they do next. Loaded last,
+      # because the kernel refuses every rule that follows it.
+      -e 2
+    dest: /etc/audit/rules.d/99-jengasec-immutable.rules
+    owner: root
+    group: root
+    mode: "0640"
+  when: audit_immutable | bool
+  notify: Load audit rules
+  tags: [audit, rules]
+
+- name: Remove the immutable flag when disabled
+  ansible.builtin.file:
+    path: /etc/audit/rules.d/99-jengasec-immutable.rules
+    state: absent
+  when: not audit_immutable | bool
+  notify: Load audit rules
+  tags: [audit, rules]
+
+- name: Enable and start auditd
+  ansible.builtin.systemd:
+    name: "{{ audit_service_name }}"
+    enabled: true
+    state: started
+  tags: [audit, service]
+
+- name: Apply pending rule changes
+  ansible.builtin.meta: flush_handlers
+  tags: [audit]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Read back the loaded rules
+  ansible.builtin.command:
+    cmd: auditctl -l
+  register: audit_loaded_rules
+  changed_when: false
+  failed_when: false
+  tags: [audit, verify]
+
+- name: Report the loaded rule count
+  ansible.builtin.debug:
+    msg: >-
+      {{ audit_loaded_rules.stdout_lines | default([]) | length }} audit rules
+      loaded on {{ inventory_hostname }}
+      {{ '(IMMUTABLE — a reboot is required to change them)' if audit_immutable else '' }}
+  tags: [audit, verify]
+
+# "No rules" means auditd is running and recording nothing, which is the worst
+# of both worlds: the cost of the daemon with none of the evidence.
+- name: Fail if no rules loaded
+  ansible.builtin.fail:
+    msg: >-
+      auditd is running on {{ inventory_hostname }} but has NO rules loaded. It
+      is recording nothing. Check `auditctl -l` and
+      `journalctl -u auditd` — usually a syntax error in
+      /etc/audit/rules.d/50-jengasec.rules.
+  when:
+    - audit_loaded_rules.stdout is defined
+    - "'No rules' in audit_loaded_rules.stdout"
+  tags: [audit, verify]
+
+- name: Check the audit log is being written
+  ansible.builtin.stat:
+    path: /var/log/audit/audit.log
+  register: audit_log_stat
+  tags: [audit, verify]
+
+- name: Report the audit log size
+  ansible.builtin.debug:
+    msg: >-
+      /var/log/audit/audit.log is
+      {{ (audit_log_stat.stat.size | default(0) / 1024 / 1024) | round(2) }} MB
+      (rotating at {{ audit_max_log_file_mb }} MB, keeping {{ audit_num_logs }})
+  when: audit_log_stat.stat.exists | default(false)
+  tags: [audit, verify]

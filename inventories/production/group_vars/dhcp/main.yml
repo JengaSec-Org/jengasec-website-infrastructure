@@ -1,0 +1,49 @@
+---
+# Variables for the `dhcp` group — isc-dhcp-server (server2).
+#
+# WARNING: exactly ONE DHCP server may be authoritative on a broadcast domain.
+# If the campus network already runs one, do not deploy this role — you will
+# hand out conflicting leases to every device on the segment. Confirm with your
+# network administrator first.
+
+firewall_rules_group:
+  - port: 67
+    proto: udp
+    from: any
+    comment: "DHCP server — client requests arrive as broadcasts"
+
+# ── Global lease settings ───────────────────────────────────────────────────
+dhcp_interfaces: ["{{ networking_interface | default('eth0') }}"]
+dhcp_default_lease_time: 3600
+dhcp_max_lease_time: 7200
+dhcp_authoritative: true
+
+dhcp_domain_name: "{{ jengasec_domain }}"
+dhcp_domain_name_servers:
+  - "10.0.0.12"                          # TODO: replace — server2 runs Bind9
+
+# ── Subnets ─────────────────────────────────────────────────────────────────
+# The dynamic range deliberately starts at .100, leaving .1-.99 free for static
+# infrastructure addresses and reservations.
+dhcp_subnets:
+  - network: "10.0.0.0"                  # TODO: replace
+    netmask: "255.255.255.0"             # TODO: replace
+    range_start: "10.0.0.100"            # TODO: replace
+    range_end: "10.0.0.200"              # TODO: replace
+    gateway: "{{ jengasec_network_gateway }}"
+    broadcast: "10.0.0.255"              # TODO: replace
+
+# ── Reservations ────────────────────────────────────────────────────────────
+# Competition equipment that must keep a stable address. Add MAC addresses as
+# you commission each device — this is a data edit, not a code change.
+dhcp_reservations: []
+# Example:
+#   - hostname: red-team-workstation-01
+#     mac: "aa:bb:cc:dd:ee:01"
+#     ip: "10.0.0.50"
+
+# PXE boot for imaging competition machines. Left off; the dhcpd.conf template
+# carries the stanzas commented out, ready for when a TFTP server exists.
+dhcp_pxe_enabled: false
+dhcp_pxe_server: ""
+dhcp_pxe_filename: "pxelinux.0"

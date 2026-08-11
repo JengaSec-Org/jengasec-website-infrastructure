@@ -1,0 +1,55 @@
+---
+# Convenience playbook — the full stack for server1, the web host.
+#
+#   ansible-playbook -i inventories/production playbooks/server1.yml
+#
+# Useful when rebuilding server1 from scratch. It runs every phase in order
+# against that one host.
+#
+# WARNING: this includes the networking and firewall roles, either of which can
+# end your SSH session. Have console access open. For a first build, prefer
+# running each phase separately and verifying between them — see
+# docs/runbook.md.
+#
+# The Phase 4+ roles are stubs and will fail the play. That is the intended
+# behaviour: the playbook stops rather than reporting success on a machine that
+# has no application deployed.
+
+- name: "server1 — Phase 1, base OS"
+  hosts: server1
+  become: true
+  gather_facts: true
+  roles:
+    - { role: common, tags: [common] }
+    - { role: os, tags: [os] }
+    - { role: users, tags: [users] }
+    - { role: ssh, tags: [ssh] }
+    - { role: python, tags: [python] }
+    - { role: git, tags: [git] }
+    - { role: systemd, tags: [systemd] }
+
+- name: "server1 — Phase 2, networking"
+  hosts: server1
+  become: true
+  gather_facts: true
+  roles:
+    - { role: networking, tags: [networking] }
+    - { role: firewall, tags: [firewall] }
+    - { role: certificates, tags: [certificates] }
+
+- name: "server1 — Phase 3, security"
+  hosts: server1
+  become: true
+  gather_facts: true
+  roles:
+    - { role: security, tags: [security] }
+
+- name: "server1 — Phase 4, application platform (stubs)"
+  hosts: server1
+  become: true
+  gather_facts: true
+  roles:
+    - { role: redis, tags: [redis] }
+    - { role: gunicorn, tags: [gunicorn] }
+    - { role: django, tags: [django] }
+    - { role: nginx, tags: [nginx] }

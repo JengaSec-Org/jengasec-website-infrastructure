@@ -1,0 +1,18 @@
+# {{ common_managed_banner }}
+#
+# Time synchronisation. Three servers whose clocks disagree produce logs that
+# cannot be correlated during an incident, and TLS certificates that appear
+# invalid. This is not a cosmetic setting.
+
+[Time]
+NTP={{ common_ntp_servers | join(' ') }}
+FallbackNTP={{ common_ntp_fallback_servers | join(' ') }}
+
+# Poll frequently enough to catch drift early on hardware with a poor clock.
+PollIntervalMinSec=32
+PollIntervalMaxSec=2048
+
+# Refuse to accept a correction larger than this without human attention — a
+# huge jump usually means a misconfigured or hostile NTP source, and silently
+# accepting it would break every time-based check on the box.
+RootDistanceMaxSec=5

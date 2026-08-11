@@ -1,0 +1,20 @@
+---
+# Phase 5 — Database
+#
+# STATUS: stub. See roles/postgresql/README.md.
+#
+#   make database LIMIT=server2
+#
+# When implemented, the ordering constraint that matters is that PostgreSQL must
+# be listening and its firewall rule in place BEFORE django.yml runs migrations
+# against it — otherwise the migration fails halfway and leaves a partially
+# migrated schema, which is more work to unpick than to prevent.
+
+- name: "Phase 5 — PostgreSQL"
+  hosts: database
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: postgresql
+      tags: [postgresql, database]

@@ -1,0 +1,40 @@
+---
+# cron — Phase 7
+# Scheduled maintenance jobs.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Backup schedules
+#   - Certificate renewal checks
+#   - Log and temp-file cleanup
+#   - Report generation
+#   - Every job logs, and a silent failure must be impossible
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the cron role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'cron' role is a Phase 7 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/cron/README.md.
+  when: not cron_enabled | bool
+  tags:
+    - cron
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install cron
+#   ansible.builtin.apt:
+#     name: "{{ cron_packages }}"
+#     state: present
+#   when: cron_enabled | bool
+#   notify: Restart cron

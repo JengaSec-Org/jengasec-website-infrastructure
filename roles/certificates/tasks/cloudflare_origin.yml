@@ -1,0 +1,26 @@
+---
+# certificates — Cloudflare Origin provider.
+#
+# STATUS: NOT YET IMPLEMENTED. Phase 9, alongside the `cloudflare` role.
+#
+# A Cloudflare Origin certificate is trusted only by Cloudflare, not by
+# browsers. It secures the hop between Cloudflare and this server; visitors see
+# Cloudflare's own certificate. That is exactly what you want behind a proxy or
+# a Tunnel, and completely wrong for a server clients reach directly.
+#
+# Planned:
+#   - Issue an origin certificate through the Cloudflare API
+#   - Install the Cloudflare Origin CA root so the pull can be verified
+#   - Enable Authenticated Origin Pulls, so this server refuses any request that
+#     did not come through Cloudflare — otherwise anyone who learns the origin
+#     address bypasses the proxy entirely
+#   - Renewal (origin certificates are valid up to 15 years, so this is rare)
+
+- name: Refuse to run — the Cloudflare origin provider is not implemented
+  ansible.builtin.fail:
+    msg: >-
+      certificates_provider is 'cloudflare_origin', which is a Phase 9 stub.
+      No certificate was issued on {{ inventory_hostname }}. Use
+      certificates_provider: internal_ca for jengasec.local, or letsencrypt for
+      a public domain. See roles/certificates/README.md.
+  tags: [certificates, cloudflare, stub]

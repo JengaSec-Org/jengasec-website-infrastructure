@@ -1,0 +1,15 @@
+---
+# Handlers for the `fail2ban` role.
+
+# Restart rather than reload: fail2ban's reload does not reliably pick up a new
+# jail definition, and a jail that silently did not load is exactly the failure
+# mode this role is trying to avoid.
+#
+# Restarting clears the current ban list. That is acceptable — bans are
+# temporary by design, and anyone still probing will earn a new one within
+# minutes.
+- name: Restart fail2ban
+  ansible.builtin.systemd:
+    name: "{{ fail2ban_service_name }}"
+    state: restarted
+  listen: "restart fail2ban"

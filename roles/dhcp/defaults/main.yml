@@ -1,0 +1,75 @@
+---
+# Defaults for the `dhcp` role — Phase 2. isc-dhcp-server.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  EXACTLY ONE DHCP SERVER MAY BE AUTHORITATIVE ON A BROADCAST DOMAIN.      │
+# │                                                                           │
+# │  If the campus network already runs one, deploying this hands out         │
+# │  conflicting leases to every device on the segment — not just yours.      │
+# │  That is a network-wide outage caused by your lab, and it is the kind of  │
+# │  thing that ends a club's access to the network.                          │
+# │                                                                           │
+# │  Confirm with the network administrator before enabling this role.        │
+# └───────────────────────────────────────────────────────────────────────────┘
+
+# Off by default, for the reason above. Enabling it is a deliberate act.
+dhcp_configure: false
+
+dhcp_packages:
+  - isc-dhcp-server
+
+dhcp_service_name: isc-dhcp-server
+
+# ── Interfaces ──────────────────────────────────────────────────────────────
+# Which interfaces to serve on. Listening on the wrong one — or on all of them —
+# is how you start answering requests on a network you do not own.
+dhcp_interfaces:
+  - "{{ networking_interface | default('eth0') }}"
+
+# ── Leases ──────────────────────────────────────────────────────────────────
+# One hour by default. Short enough that a competition machine that moves or is
+# reimaged releases its address quickly, long enough not to churn.
+dhcp_default_lease_time: 3600
+dhcp_max_lease_time: 7200
+
+# 'authoritative' means this server will actively tell a client its address is
+# wrong (DHCPNAK) rather than staying quiet. Correct for a network you own,
+# actively harmful on one you share — see the warning above.
+dhcp_authoritative: true
+
+# ── Options handed to clients ───────────────────────────────────────────────
+dhcp_domain_name: "{{ jengasec_domain | default('jengasec.local') }}"
+dhcp_domain_name_servers: []
+dhcp_ntp_servers: []
+
+# ── Subnets ─────────────────────────────────────────────────────────────────
+# Fields: network, netmask, range_start, range_end, gateway, broadcast.
+#
+# Leave the low addresses out of the dynamic range. Starting at .100 keeps
+# .1-.99 free for infrastructure and reservations, so a server never collides
+# with a dynamically assigned laptop.
+dhcp_subnets: []
+
+# ── Reservations ────────────────────────────────────────────────────────────
+# Fields: hostname, mac, ip.
+#
+# Reserved addresses must sit OUTSIDE the dynamic range, or the server can hand
+# the same address to someone else before the reserved host asks for it.
+dhcp_reservations: []
+
+# ── PXE ─────────────────────────────────────────────────────────────────────
+# For imaging competition machines from a golden image. Off until a TFTP server
+# exists; the template carries the stanzas ready to enable.
+dhcp_pxe_enabled: false
+dhcp_pxe_server: ""
+dhcp_pxe_filename: "pxelinux.0"
+
+# ── Dynamic DNS ─────────────────────────────────────────────────────────────
+# Off. Letting DHCP write into Bind means anything that can request a lease can
+# create a DNS record — including one that shadows an existing service name.
+dhcp_ddns_update_style: none
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# Lease activity is a useful record of what was physically on the network and
+# when, which matters during an incident review.
+dhcp_log_facility: local7

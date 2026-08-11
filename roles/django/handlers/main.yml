@@ -1,0 +1,13 @@
+---
+# Handlers for the `django` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart django
+  ansible.builtin.systemd:
+    name: "{{ django_service_name | default('django') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart django"
+  when: django_enabled | bool

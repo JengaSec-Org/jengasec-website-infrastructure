@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: common
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Base configuration every JengaSec host requires — packages, identity, time, locale.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - bootstrap
+
+# No dependencies by design. `common` is the root of the dependency graph —
+# every other role assumes it has already run, and nothing runs before it.
+dependencies: []

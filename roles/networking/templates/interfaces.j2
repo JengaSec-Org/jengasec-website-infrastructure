@@ -1,0 +1,45 @@
+# {{ common_managed_banner }}
+#
+# Network configuration for {{ inventory_hostname }}
+# ({{ host_role_description | default('JengaSec server') }})
+#
+# A drop-in read from /etc/network/interfaces.d/, so the Debian installer's
+# original /etc/network/interfaces stays readable underneath this.
+#
+# Apply one interface:   sudo ifdown {{ networking_interface }} && sudo ifup {{ networking_interface }}
+# Inspect the result:    ip -brief addr show {{ networking_interface }}
+
+# The loopback interface is defined in the main interfaces file; redefining it
+# here would produce a duplicate-stanza error at ifup time.
+
+auto {{ networking_interface }}
+{% if networking_method == 'dhcp' %}
+iface {{ networking_interface }} inet dhcp
+{% else %}
+iface {{ networking_interface }} inet static
+    address {{ networking_address }}
+    netmask {{ networking_netmask }}
+    gateway {{ networking_gateway }}
+{% if networking_mtu != 1500 %}
+    mtu {{ networking_mtu }}
+{% endif %}
+{% if networking_dns_servers %}
+    # Consumed by the resolvconf package if it is installed. /etc/resolv.conf is
+    # also written directly by this role, because resolvconf is not installed by
+    # default on Debian 12 and these lines would otherwise do nothing at all.
+    dns-nameservers {{ networking_dns_servers | join(' ') }}
+{% endif %}
+{% if networking_dns_search %}
+    dns-search {{ networking_dns_search }}
+{% endif %}
+{% endif %}
+{% if networking_routes %}
+
+# ── Static routes ───────────────────────────────────────────────────────────
+# Added after the interface comes up, removed before it goes down, so a failed
+# ifup does not leave routes pointing at an interface that is not configured.
+{% for route in networking_routes %}
+    up ip route add {{ route.network }}/{{ route.netmask }} via {{ route.gateway }} dev {{ networking_interface }}
+    down ip route del {{ route.network }}/{{ route.netmask }} via {{ route.gateway }} dev {{ networking_interface }} || true
+{% endfor %}
+{% endif %}

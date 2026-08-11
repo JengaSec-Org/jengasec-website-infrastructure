@@ -1,0 +1,54 @@
+# {{ common_managed_banner }}
+#
+# auditd daemon configuration for {{ inventory_hostname }}.
+# The RULES are in /etc/audit/rules.d/; this file governs the daemon itself —
+# where it writes, how much it keeps, and what it does when the disk fills.
+
+log_file = /var/log/audit/audit.log
+log_group = adm
+log_format = ENRICHED
+write_logs = yes
+
+# ENRICHED resolves UIDs, GIDs, and syscall numbers to names AT WRITE TIME.
+# It costs a little disk and it means the log is still readable after the
+# account that generated an entry has been deleted — which is common, because
+# deleting the account is part of covering the tracks.
+
+# ── Rotation ────────────────────────────────────────────────────────────────
+max_log_file = {{ audit_max_log_file_mb }}
+num_logs = {{ audit_num_logs }}
+max_log_file_action = {{ audit_max_log_file_action }}
+
+# ── Disk space ──────────────────────────────────────────────────────────────
+space_left = {{ audit_space_left_mb }}
+space_left_action = {{ audit_space_left_action }}
+action_mail_acct = {{ audit_action_mail_acct }}
+
+admin_space_left = {{ audit_admin_space_left_mb }}
+admin_space_left_action = {{ audit_admin_space_left_action }}
+
+# What happens when the disk is genuinely full.
+#
+# The strict answer is 'halt' — stop the machine rather than lose an audit
+# record. On a competition platform that turns a full disk into a total outage
+# mid-event, so we rotate instead and accept losing the oldest history.
+#
+# That is a real trade-off, made deliberately. If this were a system of record
+# rather than a competition platform, 'halt' would be the right answer.
+disk_full_action = {{ audit_disk_full_action }}
+disk_error_action = syslog
+
+# ── Flush policy ────────────────────────────────────────────────────────────
+# INCREMENTAL_ASYNC with a frequency of 50: flush to disk every 50 records,
+# without blocking. 'SYNC' would guarantee no loss on power failure at a heavy
+# performance cost — too heavy for the 4 GB host.
+flush = INCREMENTAL_ASYNC
+freq = 50
+
+# ── Misc ────────────────────────────────────────────────────────────────────
+name_format = HOSTNAME
+local_events = yes
+verify_email = no
+tcp_listen_queue = 5
+tcp_max_per_addr = 1
+use_libwrap = yes

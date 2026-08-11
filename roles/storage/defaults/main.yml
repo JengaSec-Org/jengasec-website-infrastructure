@@ -1,0 +1,18 @@
+---
+# Defaults for the `storage` role — Phase 8.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+storage_enabled: false
+
+# list of dicts: src, path, fstype, opts
+storage_mounts: []
+storage_media_dir: "{{ app_media_dir }}"
+storage_static_dir: "{{ app_static_dir }}"
+storage_log_dir: "{{ app_log_dir }}"
+# group-readable, never world-readable
+storage_dir_mode: "0750"
+storage_quota_enabled: false

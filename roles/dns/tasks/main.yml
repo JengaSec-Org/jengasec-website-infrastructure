@@ -1,0 +1,267 @@
+---
+# dns — Phase 2. Bind9.
+#
+# Every configuration file is validated before the service is asked to reload:
+# named-checkconf for the config, named-checkzone for each zone. A zone file
+# with one typo makes Bind refuse to load the whole zone, and then nothing on
+# the network resolves — including the name of the server you would use to fix
+# it.
+
+- name: Install Bind9
+  ansible.builtin.apt:
+    name: "{{ dns_packages }}"
+    state: present
+  tags: [dns, packages]
+
+- name: Create the log directory
+  ansible.builtin.file:
+    path: "{{ dns_log_dir }}"
+    state: directory
+    owner: bind
+    group: bind
+    mode: "0750"
+  tags: [dns, logging]
+
+# ── Serial numbers ──────────────────────────────────────────────────────────
+#
+# A zone serial must increase whenever the zone changes, or secondaries and
+# caches keep serving stale data. The usual scheme is YYYYMMDDNN.
+#
+# The obvious implementation — generate a serial from today's date on every run
+# — rewrites the zone file every time, so the role is never idempotent and Bind
+# reloads on every play. The second run reporting "changed" is exactly the
+# signal we use to tell a working scaffold from a broken one, so it has to be
+# right here.
+#
+# Instead: render the zone with the serial it ALREADY has, compare that against
+# the live file, and bump the serial only when the rest of the content actually
+# differs.
+
+- name: Read the current zone serials
+  ansible.builtin.shell:
+    cmd: >-
+      awk '/;[ \t]*[Ss]erial/ {gsub(/[^0-9]/, "", $1); if ($1 != "") {print $1; exit}}'
+      "{{ item }}" 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  loop:
+    - "{{ dns_zone_dir }}/db.{{ dns_zone }}"
+    - "{{ dns_zone_dir }}/db.{{ dns_reverse_zone }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  register: dns_serial_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [dns, zones]
+
+- name: Establish the baseline serials
+  ansible.builtin.set_fact:
+    # 0 when the zone does not exist yet, which makes the date-based value win.
+    dns_forward_serial_existing: "{{ dns_serial_probe.results[0].stdout | default('0') | trim | int }}"
+    dns_reverse_serial_existing: "{{ dns_serial_probe.results[1].stdout | default('0') | trim | int }}"
+    dns_serial_today: "{{ (ansible_date_time.date | regex_replace('-', '') ~ '01') | int }}"
+  tags: [dns, zones]
+
+# Pass 1 — render with the EXISTING serial, to a staging path, so the comparison
+# below reflects real content changes rather than the serial itself.
+- name: Stage the forward zone for comparison
+  ansible.builtin.template:
+    src: db.forward.j2
+    dest: "/run/jengasec-forward.staged"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    dns_serial: "{{ dns_forward_serial_existing }}"
+  changed_when: false
+  check_mode: false
+  tags: [dns, zones]
+
+- name: Stage the reverse zone for comparison
+  ansible.builtin.template:
+    src: db.reverse.j2
+    dest: "/run/jengasec-reverse.staged"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    dns_serial: "{{ dns_reverse_serial_existing }}"
+  when: dns_reverse_enabled | bool
+  changed_when: false
+  check_mode: false
+  tags: [dns, zones]
+
+- name: Compare the staged zones against the live ones
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "/run/jengasec-forward.staged"
+    - "{{ dns_zone_dir }}/db.{{ dns_zone }}"
+    - "/run/jengasec-reverse.staged"
+    - "{{ dns_zone_dir }}/db.{{ dns_reverse_zone }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  register: dns_zone_checksums
+  changed_when: false
+  check_mode: false
+  tags: [dns, zones]
+
+# Bump only when the content differs. A missing live file counts as differing,
+# which correctly gives a brand new zone a fresh date-based serial.
+- name: Decide the serials to write
+  ansible.builtin.set_fact:
+    dns_forward_serial: >-
+      {{ ([dns_forward_serial_existing | int + 1, dns_serial_today | int] | max)
+         if (dns_zone_checksums.results[0].stat.checksum | default('a'))
+            != (dns_zone_checksums.results[1].stat.checksum | default('b'))
+         else (dns_forward_serial_existing | int) }}
+    dns_reverse_serial: >-
+      {{ ([dns_reverse_serial_existing | int + 1, dns_serial_today | int] | max)
+         if (dns_zone_checksums.results[2].stat.checksum | default('a'))
+            != (dns_zone_checksums.results[3].stat.checksum | default('b'))
+         else (dns_reverse_serial_existing | int) }}
+  tags: [dns, zones]
+
+- name: Remove the staging files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/run/jengasec-forward.staged"
+    - "/run/jengasec-reverse.staged"
+  changed_when: false
+  tags: [dns, zones]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+- name: Write named.conf.options
+  ansible.builtin.template:
+    src: named.conf.options.j2
+    dest: "{{ dns_config_dir }}/named.conf.options"
+    owner: root
+    group: bind
+    mode: "0640"
+    validate: "named-checkconf %s"
+  notify: Reload named
+  tags: [dns, config]
+
+- name: Write named.conf.local
+  ansible.builtin.template:
+    src: named.conf.local.j2
+    dest: "{{ dns_config_dir }}/named.conf.local"
+    owner: root
+    group: bind
+    mode: "0640"
+  notify: Reload named
+  tags: [dns, config]
+
+# ── Zone files ──────────────────────────────────────────────────────────────
+
+# named-checkzone needs the zone name as well as the file, so it cannot be
+# expressed with the template module's `validate` (which only substitutes the
+# filename). The zone is written first and checked immediately after; the check
+# is what gates the reload.
+- name: Write the forward zone
+  ansible.builtin.template:
+    src: db.forward.j2
+    dest: "{{ dns_zone_dir }}/db.{{ dns_zone }}"
+    owner: root
+    group: bind
+    mode: "0644"
+    backup: true
+  vars:
+    dns_serial: "{{ dns_forward_serial }}"
+  notify: Reload named
+  tags: [dns, zones]
+
+- name: Write the reverse zone
+  ansible.builtin.template:
+    src: db.reverse.j2
+    dest: "{{ dns_zone_dir }}/db.{{ dns_reverse_zone }}"
+    owner: root
+    group: bind
+    mode: "0644"
+    backup: true
+  vars:
+    dns_serial: "{{ dns_reverse_serial }}"
+  when: dns_reverse_enabled | bool
+  notify: Reload named
+  tags: [dns, zones]
+
+# ── Validation ──────────────────────────────────────────────────────────────
+
+- name: Validate the Bind configuration
+  ansible.builtin.command:
+    cmd: named-checkconf -z
+  register: dns_checkconf
+  changed_when: false
+  failed_when: dns_checkconf.rc != 0
+  tags: [dns, validate]
+
+- name: Validate the forward zone
+  ansible.builtin.command:
+    cmd: "named-checkzone {{ dns_zone }} {{ dns_zone_dir }}/db.{{ dns_zone }}"
+  register: dns_checkzone_forward
+  changed_when: false
+  failed_when: dns_checkzone_forward.rc != 0
+  tags: [dns, validate]
+
+- name: Validate the reverse zone
+  ansible.builtin.command:
+    cmd: "named-checkzone {{ dns_reverse_zone }} {{ dns_zone_dir }}/db.{{ dns_reverse_zone }}"
+  register: dns_checkzone_reverse
+  changed_when: false
+  failed_when: dns_checkzone_reverse.rc != 0
+  when: dns_reverse_enabled | bool
+  tags: [dns, validate]
+
+# ── Service ─────────────────────────────────────────────────────────────────
+
+- name: Enable and start Bind9
+  ansible.builtin.systemd:
+    name: "{{ dns_service_name }}"
+    enabled: true
+    state: started
+  tags: [dns, service]
+
+- name: Apply pending zone changes
+  ansible.builtin.meta: flush_handlers
+  tags: [dns]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Resolve a record through the new server
+  ansible.builtin.command:
+    cmd: "dig @127.0.0.1 {{ dns_zone }} SOA +short"
+  register: dns_verify_soa
+  changed_when: false
+  failed_when: dns_verify_soa.stdout | trim | length == 0
+  tags: [dns, verify]
+
+- name: Report the SOA record
+  ansible.builtin.debug:
+    msg: "{{ dns_zone }} SOA -> {{ dns_verify_soa.stdout | trim }}"
+  tags: [dns, verify]
+
+# Proves the recursion ACL is doing its job. Localhost is inside the ACL, so
+# this must succeed; a failure means forwarders are unreachable or recursion is
+# misconfigured, and the whole LAN has just lost external DNS.
+- name: Verify external resolution still works
+  ansible.builtin.command:
+    cmd: "dig @127.0.0.1 debian.org A +short"
+  register: dns_verify_external
+  changed_when: false
+  failed_when: false
+  tags: [dns, verify]
+
+- name: Warn if external resolution failed
+  ansible.builtin.debug:
+    msg: >-
+      External resolution through this server returned nothing. Check
+      dns_forwarders ({{ dns_forwarders | join(', ') }}) are reachable and that
+      the firewall permits outbound 53. The LAN depends on this server for
+      internet DNS.
+  when: dns_verify_external.stdout | default('') | trim | length == 0
+  tags: [dns, verify]

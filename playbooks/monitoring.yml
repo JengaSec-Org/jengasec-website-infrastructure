@@ -1,0 +1,39 @@
+---
+# Phase 7 — Monitoring and logging
+#
+# STATUS: both roles are stubs.
+#
+#   make monitoring
+#
+# node_exporter goes on every host in the `monitored` group; Prometheus and
+# Grafana go on the monitoring host only. Keeping the collector off the web and
+# database hosts is deliberate — monitoring should survive the failure it exists
+# to report.
+
+- name: "Phase 7 — log management"
+  hosts: infra
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: logging
+      tags: [logging]
+
+- name: "Phase 7 — metrics collection"
+  hosts: monitored
+  become: true
+  gather_facts: true
+
+  roles:
+    # node_exporter only. Prometheus and Grafana are in the play below.
+    - role: monitoring
+      tags: [monitoring, node-exporter]
+
+- name: "Phase 7 — Prometheus and Grafana"
+  hosts: monitoring
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: monitoring
+      tags: [monitoring, prometheus, grafana]

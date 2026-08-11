@@ -1,0 +1,11 @@
+---
+# Handlers for the `firewall` role.
+
+# `ufw reload` re-reads the configuration without flushing the ruleset, so
+# there is never a window where the host is unprotected. Never use
+# `ufw disable && ufw enable` for this.
+- name: Reload ufw
+  ansible.builtin.command:
+    cmd: ufw reload
+  changed_when: true
+  listen: "reload ufw"

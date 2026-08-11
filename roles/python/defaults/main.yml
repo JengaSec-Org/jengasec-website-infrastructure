@@ -1,0 +1,68 @@
+---
+# Defaults for the `python` role — Phase 1.
+#
+# A NOTE ON VERSIONS
+#
+# Debian 12 ships Python 3.11. The platform's README asks for 3.12+, but that is
+# a preference rather than a requirement: Django 5.0 and 5.1 both support 3.11,
+# and every package in the platform's requirements.txt has a 3.11 wheel.
+#
+# So the system interpreter is used, and python_build_from_source stays false.
+# Building Python from source means owning its security updates by hand forever,
+# which is a poor trade for a version number. If a dependency ever genuinely
+# requires 3.12, flip that one variable. Recorded in docs/decisions.md.
+
+# ── System Python ───────────────────────────────────────────────────────────
+python_packages:
+  - python3
+  - python3-pip
+  - python3-venv
+  - python3-dev            # headers — psycopg2 and PyMuPDF need these to build
+  - python3-setuptools
+  - python3-wheel
+  - python3-apt            # Ansible's apt module uses this
+
+# The interpreter every other role and playbook should reference.
+python_interpreter: /usr/bin/python3
+
+# ── Source build (disabled) ─────────────────────────────────────────────────
+# Only if something genuinely requires a newer interpreter. Turning this on
+# makes you responsible for patching Python yourself — Debian will not.
+#
+# It installs to /usr/local and does NOT replace /usr/bin/python3, because
+# overwriting the system interpreter breaks apt, which is written in Python.
+python_build_from_source: false
+python_source_version: "3.12.7"
+python_source_prefix: /usr/local
+python_source_build_deps:
+  - build-essential
+  - zlib1g-dev
+  - libncurses5-dev
+  - libgdbm-dev
+  - libnss3-dev
+  - libssl-dev
+  - libreadline-dev
+  - libffi-dev
+  - libsqlite3-dev
+  - libbz2-dev
+  - liblzma-dev
+  - tk-dev
+  - uuid-dev
+
+# ── pip ─────────────────────────────────────────────────────────────────────
+# Debian 12 marks the system Python as externally managed (PEP 668), so
+# `pip install` outside a virtualenv is refused. That is correct behaviour and
+# this role does not work around it: application dependencies belong in the
+# virtualenv the `django` role creates, never in the system site-packages.
+python_pip_break_system_packages: false
+
+# Global pip settings written to /etc/pip.conf.
+python_pip_index_url: "https://pypi.org/simple"
+python_pip_timeout: 60
+python_pip_retries: 3
+python_manage_pip_conf: true
+
+# ── Virtualenv ──────────────────────────────────────────────────────────────
+# The application virtualenv is created by the `django` role, which owns the
+# application. This role only guarantees the tooling exists to create one.
+python_venv_command: "{{ python_interpreter }} -m venv"

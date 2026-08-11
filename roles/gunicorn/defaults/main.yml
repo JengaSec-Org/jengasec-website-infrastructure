@@ -1,0 +1,23 @@
+---
+# Defaults for the `gunicorn` role — Phase 4.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+gunicorn_enabled: false
+
+# the (2 x cores) + 1 convention
+gunicorn_workers: "{{ (ansible_processor_vcpus | int * 2) + 1 }}"
+# async only helps if the workload becomes IO-bound
+gunicorn_worker_class: sync
+# Ollama evaluation calls are slow
+gunicorn_timeout: 120
+gunicorn_graceful_timeout: 30
+# recycle workers to bound memory growth
+gunicorn_max_requests: 1000
+# stagger restarts so they never align
+gunicorn_max_requests_jitter: 50
+gunicorn_bind: "unix:/run/gunicorn/gunicorn.sock"
+gunicorn_log_level: info

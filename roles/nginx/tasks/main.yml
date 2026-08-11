@@ -1,0 +1,43 @@
+---
+# nginx — Phase 4
+# Reverse proxy and TLS terminator in front of gunicorn.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Reverse proxy to the gunicorn socket
+#   - TLS termination using the certificates role output
+#   - Security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options)
+#   - Static file serving from app_static_dir
+#   - Media file serving from app_media_dir, with execution disabled
+#   - gzip compression and proxy caching
+#   - Rate limiting on /login/ and /admin/
+#   - Access and error logging, with logrotate
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the nginx role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'nginx' role is a Phase 4 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/nginx/README.md.
+  when: not nginx_enabled | bool
+  tags:
+    - nginx
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install nginx
+#   ansible.builtin.apt:
+#     name: "{{ nginx_packages }}"
+#     state: present
+#   when: nginx_enabled | bool
+#   notify: Restart nginx

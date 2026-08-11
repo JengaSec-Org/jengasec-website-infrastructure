@@ -1,0 +1,40 @@
+---
+# deployment — Phase 7
+# Application release, rollback, and service orchestration.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Pull the target revision and record it
+#   - Run migrations and collectstatic in the right order
+#   - Restart services in dependency order
+#   - Health check after release, and roll back if it fails
+#   - Keep the previous release available for instant rollback
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the deployment role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'deployment' role is a Phase 7 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/deployment/README.md.
+  when: not deployment_enabled | bool
+  tags:
+    - deployment
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install deployment
+#   ansible.builtin.apt:
+#     name: "{{ deployment_packages }}"
+#     state: present
+#   when: deployment_enabled | bool
+#   notify: Restart deployment

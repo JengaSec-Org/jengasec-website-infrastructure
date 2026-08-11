@@ -1,0 +1,79 @@
+# {{ common_managed_banner }}
+#
+# Shared interactive-shell settings for every JengaSec host.
+# Installed to /etc/profile.d/99-jengasec.sh — sourced for all login shells.
+# Personal preferences belong in ~/.bashrc, not here.
+
+# Only apply to interactive shells; scripts must not inherit any of this.
+case $- in
+    *i*) ;;
+      *) return ;;
+esac
+
+# ── History ─────────────────────────────────────────────────────────────────
+# A generous, timestamped, append-only history. During an incident, knowing
+# exactly what was run and when is worth more than the disk it costs.
+export HISTSIZE=10000
+export HISTFILESIZE=20000
+export HISTTIMEFORMAT="%F %T  "
+export HISTCONTROL=ignoredups:erasedups
+shopt -s histappend
+shopt -s cmdhist
+
+# Write each command as it is entered, not only on clean shell exit — otherwise
+# a dropped SSH session loses the history you most wanted to read.
+PROMPT_COMMAND="history -a;${PROMPT_COMMAND:-}"
+
+# ── Prompt ──────────────────────────────────────────────────────────────────
+# The environment is colour-coded, so a production shell is never mistaken for
+# a staging one: red for production, yellow for staging, green for development.
+{% if jengasec_environment | default('') == 'production' %}
+_JENGASEC_COLOUR='\[\033[01;31m\]'    # red — production
+{% elif jengasec_environment | default('') == 'staging' %}
+_JENGASEC_COLOUR='\[\033[01;33m\]'    # yellow — staging
+{% else %}
+_JENGASEC_COLOUR='\[\033[01;32m\]'    # green — development
+{% endif %}
+
+if [ -n "${BASH_VERSION:-}" ]; then
+    PS1="${_JENGASEC_COLOUR}\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]"
+    PS1="${PS1} [{{ jengasec_environment | default('?') }}]\$ "
+fi
+
+# ── Shell behaviour ─────────────────────────────────────────────────────────
+shopt -s checkwinsize
+shopt -s cdspell
+export EDITOR=vim
+export VISUAL=vim
+export PAGER=less
+export LESS="-R"
+
+# ── Aliases ─────────────────────────────────────────────────────────────────
+alias ll='ls -alFh --color=auto'
+alias la='ls -A --color=auto'
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+alias df='df -h'
+alias du='du -h'
+alias free='free -h'
+
+# Interactive by default. On a server you administer at 2am, the confirmation
+# prompt is the difference between a mistake and an outage.
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+# ── JengaSec shortcuts ──────────────────────────────────────────────────────
+alias jlog='sudo journalctl -f -u'
+alias jstatus='sudo systemctl status'
+{% if 'web' in group_names %}
+alias japp='cd {{ app_source_dir }}'
+alias jgunicorn='sudo journalctl -fu gunicorn'
+alias jnginx='sudo journalctl -fu nginx'
+{% endif %}
+{% if 'database' in group_names %}
+alias jpsql='sudo -u postgres psql'
+{% endif %}
+{% if 'dns' in group_names %}
+alias jnamed='sudo journalctl -fu named'
+{% endif %}

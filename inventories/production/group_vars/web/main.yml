@@ -1,0 +1,44 @@
+---
+# Variables for the `web` group — nginx + gunicorn + Django (server1, 8 GB).
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+# Merged with firewall_rules_common by the firewall role.
+# HTTP/HTTPS are open to everyone: this is the public face of the competition.
+firewall_rules_group:
+  - port: 80
+    proto: tcp
+    from: any
+    comment: "HTTP — redirects to HTTPS"
+  - port: 443
+    proto: tcp
+    from: any
+    comment: "HTTPS — JengaSec platform"
+
+# ── Gunicorn (Phase 4, role currently a stub) ───────────────────────────────
+# Worker count follows the (2 x cores) + 1 convention, capped so the box keeps
+# headroom for nginx and the AI request queue.
+gunicorn_workers: "{{ [(ansible_processor_vcpus | int * 2) + 1, 9] | min }}"
+gunicorn_worker_class: sync
+gunicorn_timeout: 120          # AI evaluation calls to Ollama are slow
+gunicorn_bind: "unix:/run/gunicorn/gunicorn.sock"
+
+# ── Django (Phase 4, role currently a stub) ─────────────────────────────────
+# These become the .env file rendered by the django role. Names match exactly
+# what config/settings.py reads — do not rename them.
+django_debug: false
+django_allowed_hosts:
+  - "platform.{{ jengasec_domain }}"
+  - "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
+
+# Points Django at PostgreSQL on server2. Setting JENGASEC_DB_NAME is what
+# switches settings.py off SQLite, so it must always be present in production.
+django_db_name: jengasec
+django_db_user: jengasec
+django_db_host: "{{ hostvars['server2']['ansible_host'] | default('10.0.0.12') }}"
+django_db_port: 5432
+django_db_sslmode: prefer      # 'require' once certificates are in place
+
+# ── Ollama AI layer ─────────────────────────────────────────────────────────
+ollama_base_url: "http://localhost:11434"
+ollama_model: llama3

@@ -1,0 +1,169 @@
+---
+# os — Phase 1
+# Kernel parameters, resource limits, swap, journal size, module blacklist.
+
+# systemd reads drop-ins from these directories, but Debian does not ship them.
+# Templating into a directory that does not exist fails, so create them first.
+- name: Ensure the systemd drop-in directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/systemd/system.conf.d
+    - /etc/systemd/journald.conf.d
+  tags: [os, limits, journal]
+
+# ── Kernel parameters ───────────────────────────────────────────────────────
+
+# The merged dict is what actually gets written. Doing the merge once here,
+# into a fact, keeps the template simple and makes the result inspectable with
+# `--check --diff`.
+- name: Merge sysctl defaults with group and host overrides
+  ansible.builtin.set_fact:
+    os_sysctl_merged: "{{ os_sysctl | combine(os_sysctl_overrides) }}"
+  tags: [os, sysctl]
+
+- name: Write kernel parameters
+  ansible.builtin.template:
+    src: 60-jengasec.conf.j2
+    dest: /etc/sysctl.d/60-jengasec.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload sysctl
+  tags: [os, sysctl]
+
+# ── Resource limits ─────────────────────────────────────────────────────────
+
+- name: Set PAM resource limits
+  ansible.builtin.template:
+    src: limits.conf.j2
+    dest: /etc/security/limits.d/60-jengasec.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [os, limits]
+
+# systemd services do not read /etc/security/limits.conf at all — that is a PAM
+# file, and systemd is not PAM. Without this drop-in, gunicorn and nginx keep
+# the 1024-descriptor default no matter what limits.d says. This trips people
+# up constantly.
+- name: Raise the systemd-wide file descriptor limit
+  ansible.builtin.template:
+    src: systemd-limits.conf.j2
+    dest: /etc/systemd/system.conf.d/60-jengasec-limits.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reexec systemd
+  tags: [os, limits]
+
+# ── Kernel modules ──────────────────────────────────────────────────────────
+
+- name: Blacklist unused kernel modules
+  ansible.builtin.template:
+    src: modprobe-blacklist.conf.j2
+    dest: /etc/modprobe.d/60-jengasec-blacklist.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [os, modules]
+
+- name: Load required kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop: "{{ os_load_modules }}"
+  when: os_load_modules | length > 0
+  tags: [os, modules]
+
+# ── Journal ─────────────────────────────────────────────────────────────────
+
+- name: Configure journald size and retention
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/60-jengasec.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+  tags: [os, journal]
+
+# ── Swap ────────────────────────────────────────────────────────────────────
+# Guarded at every step so re-running never recreates or resizes an existing
+# swap file — that would mean swapoff on a live server, which can OOM it.
+
+- name: Check whether the swap file already exists
+  ansible.builtin.stat:
+    path: "{{ os_swap_file }}"
+  register: os_swap_stat
+  when: os_swap_enabled | bool
+  tags: [os, swap]
+
+- name: Create the swap file
+  ansible.builtin.command:
+    cmd: "fallocate -l {{ os_swap_size_mb }}M {{ os_swap_file }}"
+    creates: "{{ os_swap_file }}"
+  when:
+    - os_swap_enabled | bool
+    - not os_swap_stat.stat.exists
+  tags: [os, swap]
+
+# 0600 matters: swap can hold anything the application had in memory, including
+# the Django secret key and submission contents.
+- name: Restrict permissions on the swap file
+  ansible.builtin.file:
+    path: "{{ os_swap_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: os_swap_enabled | bool
+  tags: [os, swap]
+
+- name: Format the swap file
+  ansible.builtin.command:
+    cmd: "mkswap {{ os_swap_file }}"
+  when:
+    - os_swap_enabled | bool
+    - not os_swap_stat.stat.exists
+  changed_when: true
+  tags: [os, swap]
+
+- name: Enable the swap file at boot
+  ansible.posix.mount:
+    src: "{{ os_swap_file }}"
+    path: none
+    fstype: swap
+    opts: sw,nofail
+    state: present
+  when: os_swap_enabled | bool
+  tags: [os, swap]
+
+- name: Activate swap now
+  ansible.builtin.command:
+    cmd: "swapon {{ os_swap_file }}"
+  when:
+    - os_swap_enabled | bool
+    - not os_swap_stat.stat.exists
+  changed_when: true
+  failed_when: false
+  tags: [os, swap]
+
+# ── Additional mounts ───────────────────────────────────────────────────────
+
+- name: Configure additional filesystem mounts
+  ansible.posix.mount:
+    src: "{{ item.src }}"
+    path: "{{ item.path }}"
+    fstype: "{{ item.fstype }}"
+    opts: "{{ item.opts | default('defaults') }}"
+    state: mounted
+  loop: "{{ os_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: os_mounts | length > 0
+  tags: [os, mounts]

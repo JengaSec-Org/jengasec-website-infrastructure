@@ -1,0 +1,14 @@
+# {{ common_managed_banner }}
+#
+# Kernel parameters for {{ inventory_hostname }} ({{ host_role_description | default('JengaSec server') }}).
+#
+# Built from os_sysctl in roles/os/defaults/main.yml, merged with
+# os_sysctl_overrides from this host's group_vars and host_vars.
+# The rationale for each setting lives beside it in defaults/main.yml.
+#
+# Apply without rebooting:  sysctl --system
+# Read the live value:      sysctl <key>
+
+{% for key, value in os_sysctl_merged | dictsort %}
+{{ key }} = {{ value }}
+{% endfor %}

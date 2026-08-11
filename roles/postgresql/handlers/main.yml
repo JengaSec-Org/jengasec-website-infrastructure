@@ -1,0 +1,13 @@
+---
+# Handlers for the `postgresql` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart postgresql
+  ansible.builtin.systemd:
+    name: "{{ postgresql_service_name | default('postgresql') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart postgresql"
+  when: postgresql_enabled | bool

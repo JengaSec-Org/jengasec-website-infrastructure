@@ -1,0 +1,16 @@
+# {{ common_managed_banner }}
+#
+# PAM resource limits — /etc/security/limits.d/60-jengasec.conf
+#
+# IMPORTANT: this file applies to LOGIN SESSIONS only. systemd services do not
+# read it, because systemd is not PAM. Limits for gunicorn, nginx, and
+# PostgreSQL come from /etc/systemd/system.conf.d/60-jengasec-limits.conf and
+# from each unit's own LimitNOFILE.
+#
+# Verify an interactive session:   ulimit -n
+# Verify a running service:        cat /proc/$(pidof nginx | cut -d' ' -f1)/limits
+
+#<domain>  <type>  <item>   <value>
+{% for limit in os_limits %}
+{{ "%-10s"|format(limit.domain) }} {{ "%-7s"|format(limit.limit_type) }} {{ "%-8s"|format(limit.limit_item) }} {{ limit.value }}
+{% endfor %}

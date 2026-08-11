@@ -1,0 +1,129 @@
+// {{ common_managed_banner }}
+//
+// Bind9 global options for {{ inventory_hostname }}.
+// Validated with named-checkconf before this file is put in place.
+
+// ── Access control lists ───────────────────────────────────────────────────
+// Named once, referenced below. Changing who counts as "the LAN" is one edit.
+acl "jengasec-lan" {
+{% for source in dns_recursion_allowed_from %}
+    {{ source }};
+{% endfor %}
+};
+
+options {
+    directory "/var/cache/bind";
+
+    // ── Listening ──────────────────────────────────────────────────────────
+    listen-on {
+{% for address in dns_listen_on %}
+        {{ address }};
+{% endfor %}
+    };
+    listen-on-v6 { {{ dns_listen_on_v6 }}; };
+
+    // ── Recursion ──────────────────────────────────────────────────────────
+    //
+    // THIS IS THE MOST IMPORTANT BLOCK IN THE FILE.
+    //
+    // A recursive resolver that answers anyone is an amplification weapon: a
+    // small spoofed query produces a large reply aimed at whoever the attacker
+    // chose, so your server becomes the gun. It is also how a resolver lands on
+    // public abuse lists and gets the university's address range blocked.
+    //
+    // Never widen allow-recursion to 'any'.
+    recursion {{ 'yes' if dns_recursion_enabled else 'no' }};
+    allow-recursion { jengasec-lan; };
+
+    // Who may query at all — including for our own zones.
+    allow-query {
+{% for source in dns_allow_query %}
+        {{ source }};
+{% endfor %}
+    };
+
+    // Nobody needs to ask this server for the root zone.
+    allow-query-cache { jengasec-lan; };
+
+    // ── Forwarding ─────────────────────────────────────────────────────────
+    forwarders {
+{% for forwarder in dns_forwarders %}
+        {{ forwarder }};
+{% endfor %}
+    };
+    // '{{ dns_forward_policy }}': {% if dns_forward_policy == 'first' %}try the forwarders, fall back to full recursion{% else %}forwarders only, never recurse{% endif %}.
+    forward {{ dns_forward_policy }};
+
+    // ── Zone transfers ─────────────────────────────────────────────────────
+    //
+    // An unrestricted AXFR hands over a complete inventory of the network —
+    // every hostname and address, in a single query. It is the first thing
+    // anyone points at a nameserver they have just found.
+{% if dns_allow_transfer %}
+    allow-transfer {
+{% for source in dns_allow_transfer %}
+        {{ source }};
+{% endfor %}
+    };
+{% else %}
+    allow-transfer { none; };
+{% endif %}
+
+    // Only the primary should accept dynamic updates, and we do not use them.
+    allow-update { none; };
+
+    // ── DNSSEC ─────────────────────────────────────────────────────────────
+    // Validate answers we receive from upstream. This is separate from signing
+    // our own zone, which we do not do — see dns_dnssec_sign_zone in
+    // defaults/main.yml for why.
+    dnssec-validation {{ dns_dnssec_validation }};
+
+    // ── Information disclosure ─────────────────────────────────────────────
+{% if dns_hide_version %}
+    // Stops `dig @{{ inventory_hostname }} chaos txt version.bind` returning
+    // the exact BIND version, which is free reconnaissance.
+    version "not disclosed";
+    hostname none;
+    server-id none;
+{% endif %}
+{% if dns_rate_limit_enabled %}
+
+    // ── Response rate limiting ─────────────────────────────────────────────
+    // Caps identical answers to the same /24 per second. Blunts amplification
+    // attempts that get past the recursion ACL, and costs nothing in normal use
+    // because real clients do not ask the same question 15 times a second.
+    rate-limit {
+        responses-per-second {{ dns_rate_limit_responses_per_second }};
+        window 5;
+    };
+{% endif %}
+
+    // ── Misc ───────────────────────────────────────────────────────────────
+    auth-nxdomain no;    // conform to RFC 1035
+};
+
+// ── Logging ────────────────────────────────────────────────────────────────
+logging {
+    channel jengasec_log {
+        file "{{ dns_log_dir }}/named.log" versions 5 size 10m;
+        severity info;
+        print-time yes;
+        print-severity yes;
+        print-category yes;
+    };
+
+    category default { jengasec_log; };
+    category security { jengasec_log; };
+    category lame-servers { null; };    // noisy and rarely actionable
+{% if dns_query_logging %}
+
+    // One line per query. Genuinely interesting data for a cybersecurity club
+    // to analyse, and a lot of disk on a busy network — watch {{ dns_log_dir }}.
+    channel jengasec_queries {
+        file "{{ dns_log_dir }}/queries.log" versions 3 size 50m;
+        severity info;
+        print-time yes;
+    };
+    category queries { jengasec_queries; };
+{% endif %}
+};

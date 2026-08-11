@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: audit
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: auditd with rules covering identity, privilege, configuration, and competition data.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - security
+    - audit
+
+dependencies: []

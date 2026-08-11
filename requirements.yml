@@ -1,0 +1,30 @@
+---
+# Ansible Galaxy dependencies for JengaSec Infrastructure.
+#
+# Install on the control node before the first run:
+#   ansible-galaxy collection install -r requirements.yml
+#
+# Versions are floors, not pins — ansible-core on Debian 12 (2.14) satisfies all of
+# them. Bump the floor only when a role starts using a newer module.
+
+collections:
+  # ufw, timezone, sysctl, mount, seboolean — used by common, os, firewall.
+  - name: ansible.posix
+    version: ">=1.5.0"
+
+  # timezone helpers, ufw extras, filesystem/LVM, pam_limits, sudoers.
+  - name: community.general
+    version: ">=7.0.0"
+
+  # x509 certificate + private key generation for the internal CA
+  # (certificates role, certificates_provider: internal_ca).
+  - name: community.crypto
+    version: ">=2.15.0"
+
+  # postgresql_db / postgresql_user / postgresql_privs — Phase 5, role is
+  # currently a stub but the collection is declared so the dependency set is
+  # complete from day one.
+  - name: community.postgresql
+    version: ">=3.2.0"
+
+roles: []

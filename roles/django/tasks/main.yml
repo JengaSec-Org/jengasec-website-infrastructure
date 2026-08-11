@@ -1,0 +1,42 @@
+---
+# django — Phase 4
+# Deploy the JengaSec platform: code, virtualenv, environment, migrations.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Clone or update the application repository at app_repo_branch
+#   - Create the virtualenv and install requirements.txt
+#   - Render the .env file from vault-backed variables
+#   - Run manage.py migrate
+#   - Run manage.py collectstatic
+#   - Set ownership and permissions on media and static directories
+#   - Notify the gunicorn handler to reload
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the django role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'django' role is a Phase 4 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/django/README.md.
+  when: not django_enabled | bool
+  tags:
+    - django
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install django
+#   ansible.builtin.apt:
+#     name: "{{ django_packages }}"
+#     state: present
+#   when: django_enabled | bool
+#   notify: Restart django

@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: fail2ban
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Intrusion prevention — bans addresses that repeatedly fail authentication.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - security
+    - fail2ban
+
+# The firewall role should run first — fail2ban's ufw ban action needs UFW
+# present. Ordering is enforced in playbooks/security.yml rather than declared
+# here, so that this role stays usable on its own.
+dependencies: []

@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: os
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Kernel parameters, resource limits, swap, journal size, and module blacklist.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - hardening
+
+dependencies: []

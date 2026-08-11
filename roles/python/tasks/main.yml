@@ -1,0 +1,90 @@
+---
+# python — Phase 1
+# The Python runtime every other role and the application depend on.
+
+- name: Install Python and its development headers
+  ansible.builtin.apt:
+    name: "{{ python_packages }}"
+    state: present
+  tags: [python, packages]
+
+- name: Record the installed Python version
+  ansible.builtin.command:
+    cmd: "{{ python_interpreter }} --version"
+  register: python_version_output
+  changed_when: false
+  tags: [python, verify]
+
+- name: Report the Python version
+  ansible.builtin.debug:
+    msg: "{{ python_version_output.stdout | trim }} at {{ python_interpreter }}"
+  tags: [python, verify]
+
+- name: Configure pip
+  ansible.builtin.template:
+    src: pip.conf.j2
+    dest: /etc/pip.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: python_manage_pip_conf | bool
+  tags: [python, pip]
+
+# ── Optional source build ───────────────────────────────────────────────────
+# Everything below is skipped unless python_build_from_source is true. Read the
+# note at the top of defaults/main.yml before turning it on.
+
+- name: Install build dependencies for a source Python
+  ansible.builtin.apt:
+    name: "{{ python_source_build_deps }}"
+    state: present
+  when: python_build_from_source | bool
+  tags: [python, source-build]
+
+- name: Check for an existing source-built Python
+  ansible.builtin.stat:
+    path: "{{ python_source_prefix }}/bin/python{{ python_source_version.split('.')[0:2] | join('.') }}"
+  register: python_source_installed
+  when: python_build_from_source | bool
+  tags: [python, source-build]
+
+- name: Download the Python source
+  ansible.builtin.get_url:
+    url: "https://www.python.org/ftp/python/{{ python_source_version }}/Python-{{ python_source_version }}.tgz"
+    dest: "/tmp/Python-{{ python_source_version }}.tgz"
+    mode: "0644"
+  when:
+    - python_build_from_source | bool
+    - not python_source_installed.stat.exists
+  tags: [python, source-build]
+
+- name: Unpack the Python source
+  ansible.builtin.unarchive:
+    src: "/tmp/Python-{{ python_source_version }}.tgz"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/Python-{{ python_source_version }}"
+  when:
+    - python_build_from_source | bool
+    - not python_source_installed.stat.exists
+  tags: [python, source-build]
+
+# `altinstall`, never `install`. A plain `make install` overwrites
+# /usr/local/bin/python3 and, depending on prefix, can shadow the system
+# interpreter — which breaks apt, because apt is written in Python. Recovering
+# from that on a remote server is genuinely unpleasant.
+- name: Build and install Python from source
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      ./configure --prefix={{ python_source_prefix }} --enable-optimizations --with-ensurepip=install
+      make -j "$(nproc)"
+      make altinstall
+    chdir: "/tmp/Python-{{ python_source_version }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ python_source_prefix }}/bin/python{{ python_source_version.split('.')[0:2] | join('.') }}"
+  when:
+    - python_build_from_source | bool
+    - not python_source_installed.stat.exists
+  tags: [python, source-build]

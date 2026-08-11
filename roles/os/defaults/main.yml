@@ -1,0 +1,157 @@
+---
+# Defaults for the `os` role — Phase 1.
+# Kernel parameters, resource limits, swap, and journal size.
+
+# ── Kernel parameters ───────────────────────────────────────────────────────
+# Rendered into /etc/sysctl.d/60-jengasec.conf. A group or host adds to this
+# via os_sysctl_overrides, which is merged on top — see tasks/main.yml.
+#
+# Every entry below is either a network hardening measure or a memory setting
+# chosen for servers with 4-8 GB of RAM.
+os_sysctl:
+  # ── Network hardening ─────────────────────────────────────────────────
+  # Do not forward packets. These are servers, not routers. If one of them is
+  # compromised, forwarding turns it into a pivot into the rest of the LAN.
+  net.ipv4.ip_forward: 0
+  net.ipv6.conf.all.forwarding: 0
+
+  # Ignore ICMP redirects. Accepting them lets anyone on the segment rewrite
+  # the routing table.
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.secure_redirects: 0
+  net.ipv4.conf.default.secure_redirects: 0
+  net.ipv6.conf.all.accept_redirects: 0
+  net.ipv6.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+
+  # Reject source-routed packets — an old but still-used way to bypass
+  # return-path filtering.
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.default.accept_source_route: 0
+  net.ipv6.conf.all.accept_source_route: 0
+  net.ipv6.conf.default.accept_source_route: 0
+
+  # Reverse-path filtering: drop packets whose source address could not have
+  # arrived on that interface. Cheap, effective anti-spoofing.
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+
+  # Log packets with impossible addresses.
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.conf.default.log_martians: 1
+
+  # SYN flood protection.
+  net.ipv4.tcp_syncookies: 1
+  net.ipv4.tcp_max_syn_backlog: 2048
+  net.ipv4.tcp_synack_retries: 2
+
+  # Ignore broadcast ICMP — stops the box being used as a smurf amplifier.
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.icmp_ignore_bogus_error_responses: 1
+
+  # ── Kernel hardening ──────────────────────────────────────────────────
+  # Hide kernel pointers from unprivileged users — they defeat KASLR and make
+  # local exploitation dramatically easier.
+  kernel.kptr_restrict: 2
+  kernel.dmesg_restrict: 1
+
+  # Restrict ptrace to direct children only, so one compromised process cannot
+  # read another's memory.
+  kernel.yama.ptrace_scope: 1
+
+  # Do not write core dumps for setuid binaries.
+  fs.suid_dumpable: 0
+
+  # Protect against symlink/hardlink races in world-writable directories —
+  # a classic local privilege-escalation route through /tmp.
+  fs.protected_symlinks: 1
+  fs.protected_hardlinks: 1
+  fs.protected_fifos: 2
+  fs.protected_regular: 2
+
+  # ── Memory and file handles ───────────────────────────────────────────
+  # Swap only under real pressure. group_vars/database lowers this to 1,
+  # because swapping PostgreSQL's shared buffers destroys its performance.
+  vm.swappiness: 10
+  vm.vfs_cache_pressure: 50
+
+  # nginx and gunicorn together open a lot of descriptors.
+  fs.file-max: 65535
+
+  # Connection backlog for a competition-day traffic spike.
+  net.core.somaxconn: 1024
+  net.core.netdev_max_backlog: 5000
+
+# Per-group or per-host additions. Merged over os_sysctl, so a group can change
+# one value without restating the whole dict.
+os_sysctl_overrides: {}
+
+# ── Resource limits ─────────────────────────────────────────────────────────
+# /etc/security/limits.d/60-jengasec.conf. The default of 1024 open files is
+# too low for nginx plus gunicorn workers under load.
+os_limits:
+  - domain: "*"
+    limit_type: soft
+    limit_item: nofile
+    value: 16384
+  - domain: "*"
+    limit_type: hard
+    limit_item: nofile
+    value: 32768
+  # Core dumps disabled everywhere. A core file from the Django process could
+  # contain submission contents and the secret key in plaintext.
+  - domain: "*"
+    limit_type: soft
+    limit_item: core
+    value: 0
+  - domain: "*"
+    limit_type: hard
+    limit_item: core
+    value: 0
+
+# ── Swap ────────────────────────────────────────────────────────────────────
+# A swap file, not a partition — resizable without touching the partition table.
+# Insurance against the OOM killer, not a substitute for RAM.
+os_swap_enabled: true
+os_swap_size_mb: 2048
+os_swap_file: /swapfile
+
+# ── Journal ─────────────────────────────────────────────────────────────────
+# An uncapped systemd journal is the single most common way a small lab server
+# fills its disk. Debian's default is 10% of the filesystem, which on these
+# machines is more than the logs are worth.
+os_journald_max_use: "500M"
+os_journald_max_file_size: "50M"
+os_journald_max_retention: "30day"
+os_journald_storage: persistent      # survive reboots — you need last night's logs
+
+# ── Kernel modules ──────────────────────────────────────────────────────────
+# Filesystems and protocols with no use on these servers. Every one loaded is
+# attack surface that exists for no reason. Blacklisted in
+# /etc/modprobe.d/60-jengasec-blacklist.conf.
+os_blacklist_modules:
+  - cramfs
+  - freevxfs
+  - jffs2
+  - hfs
+  - hfsplus
+  - squashfs
+  - udf
+  - dccp
+  - sctp
+  - rds
+  - tipc
+  # USB storage — uncomment for physically exposed machines.
+  # - usb-storage
+
+# Modules that must be present.
+os_load_modules: []
+
+# ── Filesystem mounts ───────────────────────────────────────────────────────
+# Extra mounts, as dicts: src, path, fstype, opts.
+os_mounts: []
+
+# Alert threshold used by the monitoring role.
+os_disk_usage_warn_percent: 85

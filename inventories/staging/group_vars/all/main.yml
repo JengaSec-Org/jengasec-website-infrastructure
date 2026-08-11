@@ -1,0 +1,52 @@
+---
+# Staging overrides. Only what genuinely differs from production belongs here —
+# everything else should be identical, or staging stops predicting production.
+
+jengasec_environment: staging
+jengasec_domain: staging.jengasec.local
+jengasec_network_cidr: "10.0.1.0/24"     # TODO: replace
+jengasec_network_gateway: "10.0.1.1"     # TODO: replace
+
+common_timezone: "Africa/Nairobi"
+common_locale: "en_US.UTF-8"
+common_managed_banner: >-
+  Managed by Ansible — jengasec-infrastructure (STAGING).
+  Local edits WILL be overwritten.
+
+ssh_port: 22
+ssh_allow_groups:
+  - sudo
+  - jengasec
+
+users_service_accounts:
+  - name: jengasec
+    comment: "JengaSec administrator"
+    groups: [sudo, adm]
+    shell: /bin/bash
+    system: false
+    sudo_nopasswd: false
+
+users_admin_ssh_keys:
+  - jengasec-admin.pub                   # TODO: replace
+
+firewall_rules_common:
+  - port: "{{ ssh_port }}"
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "SSH from the staging LAN"
+
+# Debug stays on in staging so Django shows real tracebacks. This is exactly
+# why staging must never hold real submission data.
+django_debug: true
+
+app_name: jengasec
+app_user: jengasec
+app_group: jengasec
+app_root: "/opt/jengasec"
+app_source_dir: "{{ app_root }}/app"
+app_venv_dir: "{{ app_root }}/venv"
+app_static_dir: "{{ app_source_dir }}/staticfiles"
+app_media_dir: "{{ app_source_dir }}/media"
+app_log_dir: "/var/log/jengasec"
+app_repo_url: "https://github.com/JengaSec-Org/jengasec-competition-platform.git"
+app_repo_branch: main

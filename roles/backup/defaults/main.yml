@@ -1,0 +1,23 @@
+---
+# Defaults for the `backup` role — Phase 10.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+backup_enabled: false
+
+backup_root: "/srv/backup"
+# 02:00 daily, outside competition hours
+backup_schedule: "0 2 * * *"
+backup_retention_daily: 7
+backup_retention_weekly: 4
+backup_retention_monthly: 6
+backup_compression: gzip
+# backups contain submissions and judge scores
+backup_encrypt: true
+# list of dicts: name, host, type, path or database
+backup_sources: []
+# an unrestored backup is a hope, not a backup
+backup_verify_enabled: true

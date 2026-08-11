@@ -1,0 +1,20 @@
+# {{ common_managed_banner }}
+#
+# Kernel modules disabled on JengaSec servers.
+#
+# These filesystems and network protocols have no use on any of these machines.
+# Each one that can be loaded is attack surface maintained for no reason — most
+# have had privilege-escalation CVEs, and none of them will ever be needed here.
+#
+# Two directives per module, because they do different things:
+#   blacklist  stops automatic loading on hardware detection
+#   install    ... /bin/true  stops explicit `modprobe <name>` as well
+# Without the second line, anything able to run modprobe can still load it.
+#
+# Check what is currently loaded:  lsmod
+# Confirm one is blocked:          modprobe -n -v {{ os_blacklist_modules | first }}
+
+{% for module in os_blacklist_modules %}
+blacklist {{ module }}
+install {{ module }} /bin/true
+{% endfor %}

@@ -1,0 +1,96 @@
+---
+# Defaults for the `security` role — Phase 3.
+#
+# The umbrella role. It applies host hardening directly and pulls in fail2ban,
+# audit, and filesystem-security through meta/main.yml.
+#
+# Tasks are mapped to CIS Debian 12 Benchmark items, with the item number in the
+# comment. That is partly rigour and partly teaching material: a club member
+# reading this role can look up exactly why each control exists rather than
+# taking it on faith.
+#
+# Deliberately NOT here, to avoid two roles fighting over one file:
+#   sysctl and module blacklisting  -> `os` role
+#   sshd configuration              -> `ssh` role
+#   sudo policy                     -> `users` role
+
+# ── Password quality (CIS 5.4.1) ────────────────────────────────────────────
+security_password_quality_enabled: true
+security_password_min_length: 14
+security_password_min_class: 4          # upper, lower, digit, symbol
+security_password_max_repeat: 3
+security_password_remember: 5           # blocks reuse of the last 5
+
+# Password ageing (CIS 5.5.1). Applies to accounts that have a password at all;
+# the service accounts are key-only.
+security_password_max_days: 90
+security_password_min_days: 7
+security_password_warn_age: 14
+security_password_inactive_days: 30
+
+# ── Login policy (CIS 5.5) ──────────────────────────────────────────────────
+security_login_defs_umask: "027"        # new files not world-readable
+security_fail_delay: 4                  # seconds after a failed login
+security_login_retries: 5
+security_lockout_time: 900              # 15 minutes after repeated failures
+
+# ── Banners (CIS 1.7) ───────────────────────────────────────────────────────
+# /etc/issue is the local console, /etc/issue.net is the pre-auth network
+# banner. Neither may reveal the OS or version — free reconnaissance otherwise.
+security_manage_banners: true
+
+# ── su restriction (CIS 5.6) ────────────────────────────────────────────────
+# Restrict `su` to members of a single group. Without this, any account that
+# learns the root password can become root; with it, group membership is a
+# second requirement you control from this repository.
+security_restrict_su: true
+security_su_group: sudo
+
+# ── Core dumps (CIS 1.5.1) ──────────────────────────────────────────────────
+# The limits are set by the `os` role; this disables the systemd coredump
+# handler as well, which catches dumps that never reach the ulimit path.
+# A core file from the Django process would contain the secret key and whatever
+# submission data was in memory, in plaintext.
+security_disable_coredumps: true
+
+# ── Ctrl-Alt-Del (CIS 1.4.3) ────────────────────────────────────────────────
+# Anyone with physical or console access can otherwise reboot the server with
+# three keys, mid-competition, with no authentication at all.
+security_disable_ctrl_alt_del: true
+
+# ── AppArmor (CIS 1.6) ──────────────────────────────────────────────────────
+# Debian ships AppArmor enabled. Kept on, and profiles enforced rather than left
+# in complain mode where they log but do not act.
+security_apparmor_enabled: true
+security_apparmor_enforce_profiles: true
+
+# ── Package hygiene (CIS 2.2) ───────────────────────────────────────────────
+# Services with no place on a server. Each is either a listening daemon or a
+# cleartext protocol; several are both.
+security_remove_packages:
+  - telnet
+  - rsh-client
+  - talk
+  - ldap-utils
+  - nis
+  - xinetd
+  - avahi-daemon
+  - prelink
+
+# ── Compilers ───────────────────────────────────────────────────────────────
+# Restricting compilers is a common CIS-style recommendation, and it is off
+# here on purpose: the `common` role installs build-essential because pip needs
+# it to build psycopg2 and PyMuPDF. Removing it would break deployment, and
+# leaving it is an honest, documented trade rather than a silent one.
+security_restrict_compilers: false
+
+# ── Process accounting ──────────────────────────────────────────────────────
+# Records every command executed. Complements auditd: auditd tells you about
+# specific watched events, acct gives you the full command history for a
+# forensics exercise.
+security_process_accounting: true
+
+# ── Shared memory ───────────────────────────────────────────────────────────
+# Mount /dev/shm noexec,nosuid,nodev. It is world-writable by design, which
+# makes it a natural staging area for a dropped payload.
+security_harden_shm: true

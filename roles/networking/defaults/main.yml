@@ -1,0 +1,67 @@
+---
+# Defaults for the `networking` role — Phase 2.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  THIS ROLE CAN DROP YOUR SSH SESSION.                                     │
+# │                                                                           │
+# │  Reconfiguring the interface you are connected over means the connection  │
+# │  goes away mid-run. That is why networking is NOT in bootstrap.yml — it   │
+# │  lives in playbooks/networking.yml and is run deliberately, with console  │
+# │  access available. Read docs/runbook.md first.                            │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Debian 12 uses ifupdown by default (/etc/network/interfaces). This role writes
+# a drop-in to /etc/network/interfaces.d/ rather than replacing the main file,
+# so the installer's configuration stays readable underneath.
+
+# ── Master switch ───────────────────────────────────────────────────────────
+# Deliberately OFF. Enabling it is a conscious decision, made once you know the
+# interface name and have a way back into the box if it goes wrong.
+#
+# If the servers already have working static addresses from the Debian
+# installer, you may reasonably leave this off forever — Ansible does not have
+# to own everything to be useful.
+networking_configure: false
+
+# ── Interface ───────────────────────────────────────────────────────────────
+# Debian 12 uses predictable interface names: ens18, enp0s3, eno1. It is rarely
+# eth0. CHECK ON THE BOX FIRST:
+#     ip -brief link show
+# Guessing wrong takes the host off the network entirely.
+networking_interface: eth0
+networking_method: static          # static | dhcp
+
+networking_address: ""             # set in host_vars
+networking_netmask: "255.255.255.0"
+networking_gateway: ""
+networking_mtu: 1500
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+networking_dns_servers: []
+networking_dns_search: "{{ jengasec_domain | default('') }}"
+networking_manage_resolv_conf: true
+
+# ── Extra routes ────────────────────────────────────────────────────────────
+# Static routes as dicts: network, netmask, gateway.
+networking_routes: []
+
+# ── IPv6 ────────────────────────────────────────────────────────────────────
+# Disabled by default. Not because IPv6 is bad, but because a half-configured
+# IPv6 stack is worse than none: the firewall rules here are v4-only, so an
+# unmanaged v6 address can hand out reachability you did not intend and did not
+# think to filter. Turn it on only when you are prepared to firewall it too.
+networking_ipv6_enabled: false
+
+# ── Verification ────────────────────────────────────────────────────────────
+# Confirm the host can still reach the gateway after the change. It cannot save
+# a session that has already dropped, but it does mean a broken configuration
+# fails the play loudly instead of appearing to succeed.
+networking_verify_after_change: true
+networking_verify_target: "{{ networking_gateway }}"
+
+# ── Hostname resolution ─────────────────────────────────────────────────────
+# Static /etc/hosts entries for the other JengaSec servers, so the platform can
+# reach the database even if Bind9 is down. A DNS outage should not also be an
+# application outage.
+networking_manage_hosts_entries: true
+networking_hosts_entries: []

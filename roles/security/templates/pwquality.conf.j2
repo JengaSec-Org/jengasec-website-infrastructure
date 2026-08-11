@@ -1,0 +1,39 @@
+# {{ common_managed_banner }}
+#
+# Password quality requirements — CIS Debian 12 Benchmark 5.4.1
+#
+# These apply to accounts that have a password. The JengaSec service accounts
+# are key-only, so in practice this governs console logins and any account
+# someone adds later.
+
+# Minimum length. 14 is the CIS recommendation. Length is worth far more than
+# complexity: a long passphrase beats a short string with a symbol in it, and
+# people can actually remember it.
+minlen = {{ security_password_min_length }}
+
+# Character classes required (upper, lower, digit, symbol).
+minclass = {{ security_password_min_class }}
+
+# No more than this many identical characters in a row — blocks "aaaaaaaaaaaaaa"
+# from satisfying the length requirement.
+maxrepeat = {{ security_password_max_repeat }}
+
+# No more than 3 characters from the same class consecutively.
+maxclassrepeat = 4
+
+# Reject passwords containing the account name, in any case.
+usercheck = 1
+
+# Reject passwords found in the cracklib dictionary.
+dictcheck = 1
+
+# Reject passwords that are a simple transform of the old one — "Summer2025"
+# becoming "Summer2026" is not a password change.
+difok = 5
+
+# Apply the rules to root as well. Root having a weaker password than everyone
+# else defeats the entire policy.
+enforce_for_root
+
+# Attempts to get it right before the utility gives up.
+retry = 3

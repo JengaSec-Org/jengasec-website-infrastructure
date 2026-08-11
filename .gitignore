@@ -1,0 +1,43 @@
+# Secrets — never commit these
+.vault_pass
+vault_pass.txt
+inventories/*/vault.yml
+inventories/*/group_vars/*/vault.yml
+# SSH keys. Public keys are safe to commit, but excluding them by default means
+# adding one takes a deliberate `git add -f` — which is the moment you would
+# notice you had grabbed the private key by mistake.
+roles/users/files/ssh-keys/*
+!roles/users/files/ssh-keys/README.md
+!roles/users/files/ssh-keys/.gitkeep
+*.pem
+*.key
+!**/templates/*.key.j2
+
+# Generated certificates (internal CA output)
+files/certificates/
+
+# Ansible runtime artefacts
+*.retry
+.facts_cache/
+collections/
+.ansible/
+
+# Log files, but keep the directory itself: ansible.cfg sets log_path to
+# logs/ansible.log and Ansible does NOT create the parent directory, so a clone
+# without logs/ produces a warning on every run.
+logs/*
+!logs/.gitkeep
+
+# Python / tooling
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Editors and OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

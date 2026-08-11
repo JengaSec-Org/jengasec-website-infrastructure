@@ -1,0 +1,41 @@
+---
+# monitoring — Phase 7
+# Prometheus, Grafana, and node_exporter.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Install node_exporter on every host in the monitored group
+#   - Install Prometheus on the monitoring host
+#   - Generate scrape targets from the inventory
+#   - Alert rules: disk, memory, service down, certificate expiry
+#   - Install Grafana with provisioned dashboards and datasources
+#   - SNMP exporter for switches, routers, and the UPS (later)
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the monitoring role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'monitoring' role is a Phase 7 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/monitoring/README.md.
+  when: not monitoring_enabled | bool
+  tags:
+    - monitoring
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install monitoring
+#   ansible.builtin.apt:
+#     name: "{{ monitoring_packages }}"
+#     state: present
+#   when: monitoring_enabled | bool
+#   notify: Restart monitoring

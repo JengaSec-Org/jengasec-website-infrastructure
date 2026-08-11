@@ -1,0 +1,40 @@
+---
+# minio — Phase 8
+# S3-compatible object storage for submissions at scale.
+#
+# STATUS: NOT YET IMPLEMENTED.
+#
+# This role fails loudly rather than reporting success while doing nothing.
+# A green Ansible run that changed nothing is the most expensive kind of bug in
+# infrastructure code: you believe a machine is configured when it is not.
+#
+# Planned responsibilities:
+#   - Install the MinIO server and client
+#   - Create buckets, policies, and service users
+#   - TLS using the internal CA
+#   - Bucket versioning and lifecycle rules
+#   - Replication to the backup host
+#
+# To implement: fill defaults/main.yml first, then templates/, then these tasks,
+# then delete the fail below and update the status table in docs/roles.md.
+
+- name: Refuse to run — the minio role is not implemented yet
+  ansible.builtin.fail:
+    msg: >-
+      The 'minio' role is a Phase 8 stub and has no tasks yet.
+      Nothing was configured on {{ inventory_hostname }}.
+      Implement it, or remove it from the playbook you are running.
+      See docs/roles.md and roles/minio/README.md.
+  when: not minio_enabled | bool
+  tags:
+    - minio
+    - stub
+
+# Implemented tasks go here, guarded by the same flag while you develop:
+#
+# - name: Install minio
+#   ansible.builtin.apt:
+#     name: "{{ minio_packages }}"
+#     state: present
+#   when: minio_enabled | bool
+#   notify: Restart minio

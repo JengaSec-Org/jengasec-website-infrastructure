@@ -1,0 +1,107 @@
+---
+# Phase 2 — Networking
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  THE MOST DANGEROUS PLAYBOOK IN THIS REPOSITORY.                          │
+# │                                                                           │
+# │  Three of these roles can end the SSH session you are running from:       │
+# │    networking  reconfigures the interface you are connected over          │
+# │    firewall    default-deny; a missing rule locks you out                 │
+# │    certificates  harmless                                                 │
+# │                                                                           │
+# │  Have console access — physical, iDRAC/iLO, or the hypervisor console —   │
+# │  open BEFORE you start. Read docs/runbook.md.                             │
+# │                                                                           │
+# │  Do server1 LAST. It is the host you most need reachable, and by then     │
+# │  you will have made the same change twice already.                        │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+#   make networking LIMIT=server2
+#
+# ROLE ORDER:
+#   networking    addressing first, so DNS and the firewall see the final address
+#   firewall      before the services it protects start listening
+#   certificates  needs its hostname resolvable, hence after networking
+#   dns           the resolver for everyone else
+#   dhcp          disabled by default; read roles/dhcp/README.md first
+
+- name: "Phase 2 — networking"
+  hosts: infra
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Confirm you have console access
+      ansible.builtin.debug:
+        msg:
+          - "About to apply network and firewall changes to {{ inventory_hostname }}."
+          - ""
+          - "These roles can end this SSH session. If that happens and the"
+          - "configuration is wrong, the ONLY way back is the console."
+          - ""
+          - "networking_configure is {{ networking_configure | default(false) }}"
+          - "firewall_enabled is      {{ firewall_enabled | default(true) }}"
+          - "ssh_port is              {{ ssh_port | default(22) }}"
+          - ""
+          - "Interrupt now (Ctrl-C) if you are not ready."
+      tags: [always]
+
+  roles:
+    - role: networking
+      tags: [networking, network]
+
+    - role: firewall
+      tags: [firewall]
+
+    - role: certificates
+      tags: [certificates]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Networking complete on {{ inventory_hostname }}."
+          - ""
+          - "TEST FROM A SECOND TERMINAL NOW, before closing this session:"
+          - "  ssh -p {{ ssh_port | default(22) }} {{ users_admin_account | default('jengasec') }}@{{ ansible_host | default(inventory_hostname) }}"
+          - ""
+          - "  sudo ufw status verbose"
+          - "  ip -brief addr show"
+      tags: [always]
+
+# ── DNS and DHCP ────────────────────────────────────────────────────────────
+# A separate play, because these only apply to the hosts in those groups.
+
+- name: "Phase 2 — DNS"
+  hosts: dns
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: dns
+      tags: [dns]
+
+  post_tasks:
+    - name: Report DNS verification steps
+      ansible.builtin.debug:
+        msg:
+          - "Bind9 is running on {{ inventory_hostname }}. Verify:"
+          - "  dig @{{ ansible_host | default(inventory_hostname) }} platform.{{ jengasec_domain }}"
+          - "  dig @{{ ansible_host | default(inventory_hostname) }} -x {{ hostvars['server1']['networking_address'] | default('10.0.0.11') }}"
+          - "  dig @{{ ansible_host | default(inventory_hostname) }} debian.org"
+          - ""
+          - "This one MUST be refused — if it returns records, the transfer ACL"
+          - "is not working and anyone can enumerate your whole network:"
+          - "  dig @{{ ansible_host | default(inventory_hostname) }} {{ jengasec_domain }} AXFR"
+      tags: [always]
+
+- name: "Phase 2 — DHCP"
+  hosts: dhcp
+  become: true
+  gather_facts: true
+
+  roles:
+    # Disabled by default. Read roles/dhcp/README.md before enabling: a second
+    # DHCP server on a shared network breaks it for every device on the segment.
+    - role: dhcp
+      tags: [dhcp]

@@ -1,0 +1,59 @@
+---
+# Variables for the `database` group — PostgreSQL + Redis (server2, 4 GB).
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+# PostgreSQL is NOT open to the LAN. Only the web host may connect.
+# This is the single most important firewall rule in the repository.
+firewall_rules_group:
+  - port: 5432
+    proto: tcp
+    from: "{{ hostvars['server1']['ansible_host'] | default('10.0.0.11') }}"
+    comment: "PostgreSQL — from the web host only"
+  - port: 6379
+    proto: tcp
+    from: "{{ hostvars['server1']['ansible_host'] | default('10.0.0.11') }}"
+    comment: "Redis — from the web host only"
+
+# ── PostgreSQL (Phase 5, role currently a stub) ─────────────────────────────
+# Tuned for 4 GB of RAM. The conventional starting points are
+# shared_buffers = 25% of RAM and effective_cache_size = 50-75% of RAM.
+postgresql_version: 15                  # Debian 12 ships PostgreSQL 15
+postgresql_listen_addresses: "{{ ansible_default_ipv4.address }}"
+postgresql_max_connections: 100
+postgresql_shared_buffers: "1GB"
+postgresql_effective_cache_size: "3GB"
+postgresql_work_mem: "8MB"
+postgresql_maintenance_work_mem: "128MB"
+
+postgresql_databases:
+  - name: jengasec
+    owner: jengasec
+    encoding: UTF8
+
+postgresql_users:
+  - name: jengasec
+    db: jengasec
+    priv: ALL
+    password: "{{ vault_postgresql_jengasec_password }}"
+
+# scram-sha-256 rather than md5 — Debian 12's default and the only sane choice.
+postgresql_hba_entries:
+  - type: host
+    database: jengasec
+    user: jengasec
+    address: "{{ hostvars['server1']['ansible_host'] | default('10.0.0.11') }}/32"
+    method: scram-sha-256
+
+# ── Redis (Phase 4, role currently a stub) ──────────────────────────────────
+# maxmemory is capped so Redis can never starve PostgreSQL on a 4 GB box.
+redis_bind: "{{ ansible_default_ipv4.address }}"
+redis_maxmemory: "256mb"
+redis_maxmemory_policy: allkeys-lru
+redis_requirepass: "{{ vault_redis_password }}"
+
+# ── OS tuning ───────────────────────────────────────────────────────────────
+# PostgreSQL performs badly when the kernel swaps its shared buffers out.
+os_sysctl_overrides:
+  vm.swappiness: 1
+  vm.overcommit_memory: 2
+  vm.overcommit_ratio: 90

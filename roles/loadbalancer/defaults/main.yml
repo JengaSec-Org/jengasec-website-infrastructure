@@ -1,0 +1,22 @@
+---
+# Defaults for the `loadbalancer` role — Phase 6.
+#
+# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
+# contract, chosen now so that group_vars written today keep working when the
+# tasks are filled in. Override them in group_vars, not here.
+
+# Guard. Stays false until the role is written; see tasks/main.yml.
+loadbalancer_enabled: false
+
+# haproxy | nginx
+loadbalancer_engine: haproxy
+# roundrobin | leastconn | source
+loadbalancer_algorithm: leastconn
+# list of dicts: name, address, port, weight
+loadbalancer_backends: []
+# the app must expose this
+loadbalancer_health_check_path: "/healthz/"
+loadbalancer_health_check_interval: "5s"
+# judges lose work if their session moves
+loadbalancer_sticky_sessions: true
+loadbalancer_stats_enabled: true

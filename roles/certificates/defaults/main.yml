@@ -1,0 +1,85 @@
+---
+# Defaults for the `certificates` role — Phase 2.
+#
+# Three providers, selected by certificates_provider:
+#
+#   internal_ca        implemented — a private CA plus per-host certificates.
+#                      The default, because jengasec.local is not a public
+#                      domain and cannot be issued a publicly trusted cert.
+#
+#   letsencrypt        implemented — requires a real, publicly resolvable
+#                      domain and inbound port 80 or a DNS API.
+#
+#   cloudflare_origin  stub — Phase 9, alongside the cloudflare role.
+certificates_provider: internal_ca
+
+certificates_packages:
+  - openssl
+  - ca-certificates
+  - python3-cryptography      # required by the community.crypto modules
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+certificates_dir: /etc/ssl/jengasec
+certificates_private_dir: /etc/ssl/jengasec/private
+certificates_ca_dir: /etc/ssl/jengasec/ca
+
+# ── Certificate subject ─────────────────────────────────────────────────────
+certificates_country: KE
+certificates_state: Nairobi
+certificates_locality: Nairobi
+certificates_organization: "{{ jengasec_org | default('Strathmore Cybersecurity Club') }}"
+certificates_organizational_unit: "JengaSec Infrastructure"
+certificates_email: "sucybersec@strathmore.edu"
+
+# Per host, normally set in host_vars.
+certificates_common_name: "{{ inventory_hostname }}.{{ jengasec_domain | default('jengasec.local') }}"
+certificates_subject_alt_names: []
+
+# ── Key and validity ────────────────────────────────────────────────────────
+# 4096-bit RSA rather than a smaller key or an EC curve: it is what every client
+# on a mixed lab network accepts without argument, and the extra handshake cost
+# is irrelevant at this scale.
+certificates_key_size: 4096
+certificates_key_type: RSA
+
+# One year for host certificates. Short enough that renewal stays a practised
+# routine rather than a forgotten one; long enough not to be a chore.
+certificates_valid_days: 365
+
+# Ten years for the CA. Replacing a CA means redistributing trust to every
+# client, so it should outlive the certificates it signs by a wide margin.
+certificates_ca_valid_days: 3650
+certificates_ca_common_name: "JengaSec Internal CA"
+
+# The CA private key is protected with a passphrase from the vault. A CA key
+# that can be read by anyone who gets a shell on the host is not a CA — it is a
+# way for an attacker to issue a valid certificate for any name in your network.
+certificates_ca_passphrase: "{{ vault_ca_passphrase | default('') }}"
+
+# ── Trust distribution ──────────────────────────────────────────────────────
+# Install the CA certificate into the system trust store on every host, so
+# curl, python-requests, and psql accept internally issued certificates without
+# --insecure. Django talking to PostgreSQL over TLS depends on this.
+certificates_install_ca_trust: true
+
+# ── Renewal ─────────────────────────────────────────────────────────────────
+# Regenerate when fewer than this many days remain. Checked on every run, so a
+# monthly playbook run is enough to keep certificates current.
+certificates_renew_days_before_expiry: 30
+
+# ── Let's Encrypt ───────────────────────────────────────────────────────────
+# Only usable with a publicly resolvable domain. jengasec.local is not one, so
+# these do nothing until the club has a real domain delegated to it.
+certificates_letsencrypt_email: "sucybersec@strathmore.edu"
+certificates_letsencrypt_domains: []
+# Leave true until a real certificate is issued successfully. Let's Encrypt
+# rate-limits failed attempts on the production endpoint hard enough to lock you
+# out for a week.
+certificates_letsencrypt_staging: true
+certificates_letsencrypt_webroot: /var/www/html
+
+# ── Diffie-Hellman parameters ───────────────────────────────────────────────
+# Only needed by older TLS cipher suites. Generating 4096-bit parameters takes
+# several minutes of CPU, so it is off unless something actually needs it.
+certificates_generate_dhparam: false
+certificates_dhparam_size: 2048

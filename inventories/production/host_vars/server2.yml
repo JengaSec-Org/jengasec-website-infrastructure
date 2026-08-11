@@ -1,0 +1,33 @@
+---
+# server2 — database + network services. PostgreSQL, Redis, Bind9, DHCP. 4 GB RAM.
+
+# ── Identity ────────────────────────────────────────────────────────────────
+inventory_hostname_short: server2
+common_hostname: "server2.{{ jengasec_domain }}"
+host_role_description: "Database + DNS/DHCP — PostgreSQL, Redis, Bind9"
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# A DNS server must have a static address; nothing else about this host works
+# if it moves. Verify the interface name with `ip -brief link show` first.
+networking_interface: eth0               # TODO: replace
+networking_address: 10.0.0.12            # TODO: replace
+networking_netmask: 255.255.255.0        # TODO: replace
+networking_gateway: "{{ jengasec_network_gateway }}"
+networking_dns_servers:
+  - 127.0.0.1                            # resolves against its own Bind9
+  - 1.1.1.1
+networking_dns_search: "{{ jengasec_domain }}"
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+# Only 4 GB of RAM, so swap matters more here — but PostgreSQL must not be
+# swapped out, which is why group_vars/database sets vm.swappiness to 1.
+os_swap_enabled: true
+os_swap_size_mb: 4096
+
+# ── Certificates ────────────────────────────────────────────────────────────
+certificates_common_name: "db.{{ jengasec_domain }}"
+certificates_subject_alt_names:
+  - "DNS:db.{{ jengasec_domain }}"
+  - "DNS:server2.{{ jengasec_domain }}"
+  - "DNS:ns1.{{ jengasec_domain }}"
+  - "IP:10.0.0.12"                       # TODO: replace

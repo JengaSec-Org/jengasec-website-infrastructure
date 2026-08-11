@@ -1,0 +1,58 @@
+---
+# Phase 3 — Hardening
+#
+#   make security LIMIT=server1
+#
+# Run AFTER bootstrap.yml and after you have confirmed SSH still works. The
+# `security` role pulls in fail2ban, audit, and filesystem-security through its
+# meta dependencies, so listing it alone runs all four.
+#
+# The firewall role is in networking.yml, not here, because fail2ban's ban
+# action needs UFW installed. If you are running this before networking.yml,
+# fail2ban will still configure correctly but its bans have nowhere to go until
+# UFW exists.
+
+- name: "Phase 3 — security hardening"
+  hosts: infra
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Warn if the firewall is not yet installed
+      ansible.builtin.command:
+        cmd: which ufw
+      register: security_ufw_present
+      changed_when: false
+      failed_when: false
+      tags: [always]
+
+    - name: Report the missing firewall
+      ansible.builtin.debug:
+        msg: >-
+          UFW is not installed on {{ inventory_hostname }}. fail2ban will be
+          configured with the ufw ban action but has nothing to apply bans
+          through until you run networking.yml. This is fine as an ordering,
+          just be aware the bans are inert until then.
+      when: security_ufw_present.rc != 0
+      tags: [always]
+
+  roles:
+    # Pulls in fail2ban, audit, and filesystem-security via meta/main.yml.
+    - role: security
+      tags: [security]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 3 complete on {{ inventory_hostname }}."
+          - ""
+          - "Verify:"
+          - "  sudo aa-status"
+          - "  sudo fail2ban-client status"
+          - "  sudo auditctl -l | wc -l          # must not be 0"
+          - "  sudo ausearch -k jengasec_identity -i -ts recent"
+          - ""
+          - "Before the competition, set audit_immutable: true and reboot —"
+          - "see roles/audit/README.md."
+      tags: [always]

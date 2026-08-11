@@ -1,0 +1,13 @@
+---
+# Handlers for the `backup` role.
+#
+# Handlers run once, at the end of the play, no matter how many tasks notified
+# them. Restarting a service is a handler, never a task.
+
+- name: Restart backup
+  ansible.builtin.systemd:
+    name: "{{ backup_service_name | default('backup') }}"
+    state: restarted
+    daemon_reload: true
+  listen: "restart backup"
+  when: backup_enabled | bool

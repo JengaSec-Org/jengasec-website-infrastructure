@@ -1,0 +1,83 @@
+---
+# Defaults for the `fail2ban` role — Phase 3.
+#
+# fail2ban reads logs, matches failure patterns, and adds a temporary firewall
+# ban for the offending address.
+#
+# With SSH password authentication already disabled by the `ssh` role, fail2ban
+# is not what keeps attackers out of SSH — key auth does that. What it buys is a
+# readable auth log, and real protection for the services where credentials DO
+# get submitted: the Django login form and the admin interface.
+
+fail2ban_packages:
+  - fail2ban
+  - python3-systemd        # lets fail2ban read the journal instead of files
+
+fail2ban_service_name: fail2ban
+
+# ── Global defaults ─────────────────────────────────────────────────────────
+fail2ban_bantime: 3600          # 1 hour
+fail2ban_findtime: 600          # window in which failures are counted
+fail2ban_maxretry: 5
+
+# Repeat offenders get progressively longer bans, up to a week. Someone probing
+# five times in an hour is noise; someone still at it on day three is not.
+fail2ban_bantime_increment: true
+fail2ban_bantime_factor: 2
+fail2ban_bantime_maxtime: 604800
+
+# ── Never ban these ─────────────────────────────────────────────────────────
+# THE MOST IMPORTANT SETTING IN THIS FILE.
+#
+# Without the LAN here, a mistyped password from a club laptop can ban the
+# address you administer from — and fail2ban does not care that you are in the
+# middle of a competition.
+#
+# Include the control node's address explicitly if it is not on this subnet.
+fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - ::1
+  - "{{ jengasec_network_cidr | default('10.0.0.0/24') }}"
+
+# ── Ban action ──────────────────────────────────────────────────────────────
+# UFW, to match the firewall role. Using the default iptables action alongside
+# UFW gives you two tools writing to the same tables, and rules that reappear
+# or vanish depending on which one last reloaded.
+fail2ban_banaction: ufw
+fail2ban_banaction_allports: ufw
+
+# ── Log source ──────────────────────────────────────────────────────────────
+# systemd, because Debian 12 has no /var/log/auth.log by default — it is all in
+# the journal. Pointing fail2ban at a file that does not exist gives you a jail
+# that starts cleanly and never matches anything, which is worse than no jail
+# because it looks like it is working.
+fail2ban_backend: systemd
+
+# ── Jails ───────────────────────────────────────────────────────────────────
+# sshd is always on. The rest are enabled only where the service exists, based
+# on inventory group membership — see the template.
+fail2ban_sshd_enabled: true
+fail2ban_sshd_maxretry: 3
+fail2ban_sshd_bantime: 7200
+
+# nginx jails, applied on the `web` group.
+fail2ban_nginx_http_auth_enabled: true
+fail2ban_nginx_botsearch_enabled: true
+fail2ban_nginx_limit_req_enabled: true
+fail2ban_nginx_maxretry: 5
+
+# Django login brute force. Needs a filter and a log source — see the note in
+# README.md before enabling this, because it will not work on its own.
+fail2ban_django_enabled: false
+fail2ban_django_logpath: "{{ app_log_dir | default('/var/log/jengasec') }}/django.log"
+fail2ban_django_maxretry: 5
+fail2ban_django_bantime: 1800
+
+fail2ban_postfix_enabled: false
+
+# ── Notification ────────────────────────────────────────────────────────────
+# Off by default. A ban email per scan attempt trains everyone to filter them,
+# and then the one that mattered goes unread too.
+fail2ban_destemail: "sucybersec@strathmore.edu"
+fail2ban_sender: "fail2ban@{{ jengasec_domain | default('jengasec.local') }}"
+fail2ban_action_email: false

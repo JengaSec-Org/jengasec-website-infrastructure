@@ -1,0 +1,41 @@
+---
+# certificates — Phase 2
+# Dispatches to the configured provider. Shared setup happens here.
+
+- name: Install certificate tooling
+  ansible.builtin.apt:
+    name: "{{ certificates_packages }}"
+    state: present
+  tags: [certificates, packages]
+
+- name: Create the certificate directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ certificates_dir }}", group: root, mode: "0755" }
+    - { path: "{{ certificates_ca_dir }}", group: root, mode: "0755" }
+    # 0700 on the private directory. A private key readable by any local user is
+    # not a private key, and "the web server needs to read it" is solved by
+    # per-file ownership, not by opening the directory.
+    - { path: "{{ certificates_private_dir }}", group: root, mode: "0700" }
+  tags: [certificates, directories]
+
+- name: Configure the selected provider
+  ansible.builtin.include_tasks: "{{ certificates_provider }}.yml"
+  tags: [certificates]
+
+# ── Diffie-Hellman parameters ───────────────────────────────────────────────
+
+- name: Generate Diffie-Hellman parameters
+  community.crypto.openssl_dhparam:
+    path: "{{ certificates_dir }}/dhparam.pem"
+    size: "{{ certificates_dhparam_size }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: certificates_generate_dhparam | bool
+  tags: [certificates, dhparam]

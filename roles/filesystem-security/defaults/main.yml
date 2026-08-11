@@ -1,0 +1,112 @@
+---
+# Defaults for the `filesystem-security` role — Phase 3.
+#
+# Ownership, permissions, and ACLs. Unglamorous, and the reason a great many
+# breaches escalate from "read one file" to "own the machine".
+
+# ── Critical file permissions (CIS 6.1) ─────────────────────────────────────
+# Debian ships these correctly. They drift when someone debugging a permission
+# problem at 2am runs `chmod 777` and forgets. This role puts them back on every
+# run, which is exactly the kind of thing automation should be doing.
+filesystem_security_critical_files:
+  - { path: /etc/passwd,           owner: root, group: root,   mode: "0644" }
+  - { path: /etc/passwd-,          owner: root, group: root,   mode: "0600" }
+  - { path: /etc/group,            owner: root, group: root,   mode: "0644" }
+  - { path: /etc/group-,           owner: root, group: root,   mode: "0600" }
+  # 0640 root:shadow. World-readable /etc/shadow hands every password hash to
+  # any local account, and offline cracking is not a hard problem.
+  - { path: /etc/shadow,           owner: root, group: shadow, mode: "0640" }
+  - { path: /etc/shadow-,          owner: root, group: shadow, mode: "0640" }
+  - { path: /etc/gshadow,          owner: root, group: shadow, mode: "0640" }
+  - { path: /etc/gshadow-,         owner: root, group: shadow, mode: "0640" }
+  - { path: /etc/ssh/sshd_config,  owner: root, group: root,   mode: "0600" }
+  - { path: /boot/grub/grub.cfg,   owner: root, group: root,   mode: "0600" }
+
+# ── Cron (CIS 6.1.x) ────────────────────────────────────────────────────────
+# 0700 on every cron directory. A writable cron directory is a scheduled root
+# shell for whoever can write to it — one of the cleanest persistence
+# mechanisms there is.
+filesystem_security_cron_dirs:
+  - /etc/cron.d
+  - /etc/cron.daily
+  - /etc/cron.hourly
+  - /etc/cron.weekly
+  - /etc/cron.monthly
+
+# Restrict cron and at to root plus explicit users. An empty cron.allow with no
+# cron.deny means only root may schedule anything.
+filesystem_security_restrict_cron: true
+filesystem_security_cron_allowed_users:
+  - root
+  - "{{ app_user | default('jengasec') }}"
+
+# ── Default umask ───────────────────────────────────────────────────────────
+# 027: owner rwx, group rx, others nothing. The default 022 makes every new file
+# world-readable, which on a server holding competition submissions is the wrong
+# default to leave in place.
+filesystem_security_umask: "027"
+
+# ── Application directories ─────────────────────────────────────────────────
+# Ownership and modes for the JengaSec application tree.
+filesystem_security_manage_app_dirs: true
+
+filesystem_security_app_dirs:
+  - path: "{{ app_root | default('/opt/jengasec') }}"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0750"
+  - path: "{{ app_source_dir | default('/opt/jengasec/app') }}"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0750"
+  # Media holds uploaded submissions. 0750 — group readable so nginx can serve
+  # it, never world-readable.
+  - path: "{{ app_media_dir | default('/opt/jengasec/app/media') }}"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0750"
+  - path: "{{ app_static_dir | default('/opt/jengasec/app/staticfiles') }}"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0755"
+  - path: "{{ app_log_dir | default('/var/log/jengasec') }}"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: adm
+    mode: "0750"
+
+# ── ACLs ────────────────────────────────────────────────────────────────────
+# The deploy account needs write access to the application tree without owning
+# it and without being added to the app group everywhere. That is exactly what
+# ACLs are for — finer than "add them to the group", and reversible.
+filesystem_security_acls_enabled: true
+filesystem_security_acls:
+  - path: "{{ app_source_dir | default('/opt/jengasec/app') }}"
+    entity: deploy
+    etype: user
+    permissions: rwx
+    recursive: true
+
+# ── World-writable files ────────────────────────────────────────────────────
+# Report, do not delete. A world-writable file is usually a mistake and
+# occasionally load-bearing; deleting one automatically would be worse than the
+# problem. Surfacing it is the useful part.
+filesystem_security_scan_world_writable: true
+
+# Unowned files — left behind when an account is deleted, and a common way a
+# new account silently inherits an old one's data because UIDs get reused.
+filesystem_security_scan_unowned: true
+
+# Setuid and setgid binaries. There should be a known, stable set; a NEW one
+# appearing is a strong signal, which is why the scan is worth running on every
+# play rather than once.
+filesystem_security_scan_suid: true
+
+# Directories excluded from the scans — pseudo-filesystems where these results
+# are meaningless.
+filesystem_security_scan_exclude:
+  - /proc
+  - /sys
+  - /dev
+  - /run
+  - /snap
+  - /var/lib/docker
