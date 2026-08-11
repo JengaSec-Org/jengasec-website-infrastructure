@@ -1,0 +1,120 @@
+# {{ common_managed_banner }}
+#
+# The JengaSec Django application, served by gunicorn.
+#
+# Started by gunicorn.socket. Do not enable this unit directly — enabling both
+# starts gunicorn twice on boot and produces a confusing "address in use".
+
+[Unit]
+Description=JengaSec platform (gunicorn)
+Documentation=https://github.com/JengaSec-Org/jengasec-infrastructure
+Requires={{ gunicorn_socket_name }}
+After=network-online.target {{ gunicorn_socket_name }}
+Wants=network-online.target
+
+# Ordering only, not a hard requirement: PostgreSQL is on another host, so the
+# dependency cannot be expressed here. Django retries the connection; a database
+# that is down shows up as a 500, which is what the /healthz/ endpoint reports.
+After=postgresql.service redis-server.service
+
+[Service]
+Type=notify
+User={{ gunicorn_user }}
+Group={{ gunicorn_group }}
+WorkingDirectory={{ gunicorn_chdir }}
+
+# systemd creates /run/{{ gunicorn_runtime_dir }} with the right ownership at
+# start and removes it at stop. A plain directory in /run would vanish on reboot
+# — /run is a tmpfs — and gunicorn would fail to bind on the next boot.
+RuntimeDirectory={{ gunicorn_runtime_dir }}
+RuntimeDirectoryMode=0755
+
+# The application's environment. 0640, owned by the app user, and it holds
+# DJANGO_SECRET_KEY and the database password.
+EnvironmentFile={{ app_root | default('/opt/jengasec') }}/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH={{ gunicorn_pythonpath }}
+
+ExecStart={{ gunicorn_executable }} \
+    --name jengasec \
+    --workers {{ gunicorn_workers }} \
+    --worker-class {{ gunicorn_worker_class }} \
+{% if gunicorn_worker_class != 'sync' %}
+    --worker-connections {{ gunicorn_worker_connections }} \
+{% endif %}
+    --bind {{ gunicorn_bind }} \
+    --timeout {{ gunicorn_timeout }} \
+    --graceful-timeout {{ gunicorn_graceful_timeout }} \
+    --keep-alive {{ gunicorn_keepalive }} \
+    --max-requests {{ gunicorn_max_requests }} \
+    --max-requests-jitter {{ gunicorn_max_requests_jitter }} \
+    --log-level {{ gunicorn_log_level }} \
+    --error-logfile {{ gunicorn_error_log }} \
+{% if gunicorn_enable_access_log %}
+    --access-logfile {{ gunicorn_access_log }} \
+    --access-logformat '{{ gunicorn_access_log_format }}' \
+{% endif %}
+    {{ gunicorn_wsgi_module }}
+
+# SIGHUP: reload the application without dropping the socket. This is what makes
+# a deployment invisible to anyone mid-request.
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec={{ gunicorn_graceful_timeout + 10 }}
+
+Restart={{ gunicorn_restart }}
+RestartSec={{ gunicorn_restart_sec }}
+
+# Stop restarting after 5 failures in a minute. A service crash-looping every
+# 5 seconds writes a gigabyte of journal and buries the original error.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logs to the journal — one place to look, already size-capped by the `os` role.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gunicorn
+{% if gunicorn_systemd_hardening %}
+
+# ── Sandboxing ──────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# Everything read-only except these. The application writes uploads to media and
+# its own logs; the code directory itself stays read-only, so a compromise
+# cannot rewrite the application.
+ReadWritePaths={{ gunicorn_read_write_paths | join(' ') }}
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @obsolete
+SystemCallArchitectures=native
+
+# MemoryDenyWriteExecute is deliberately NOT set: CPython's ctypes and some
+# compiled extensions need writable-executable pages, and enabling it here
+# breaks the application in ways that are hard to trace back to this line.
+{% endif %}
+
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,231 @@
+# {{ common_managed_banner }}
+#
+# The JengaSec platform — {{ nginx_server_name }}
+#
+# nginx does three jobs here:
+#   1. terminates TLS and proxies to Django
+#   2. LOAD BALANCES across the gunicorn backends in the upstream below
+#   3. serves static and media files from disk
+#
+# (3) is not an optimisation. whitenoise is in requirements.txt but not in
+# MIDDLEWARE, and urls.py serves media only when DEBUG is on. With DEBUG off,
+# Django serves neither — without these location blocks the site renders
+# unstyled and every uploaded document 404s.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UPSTREAM — the load balancer
+# ═══════════════════════════════════════════════════════════════════════════
+upstream {{ nginx_upstream_name }} {
+{% if nginx_sticky_sessions %}
+    # Sticky sessions: every client address is hashed to one backend.
+    #
+    # NOTE this REPLACES {{ nginx_upstream_method }} — the two cannot both apply. Balancing
+    # gets worse, and everyone behind a single NAT address lands on one backend.
+    ip_hash;
+{% elif nginx_upstream_method == 'least_conn' %}
+    # Send each request to the backend with the fewest active connections.
+    #
+    # Better than round-robin here because request durations are wildly uneven:
+    # a page view takes milliseconds, an AI evaluation takes a minute. Round-robin
+    # would keep handing work to a backend already busy with a long one.
+    least_conn;
+{% endif %}
+
+    # ── Backends ────────────────────────────────────────────────────────────
+    # From nginx_upstream_servers. Adding a web host is an edit there.
+    #
+    # max_fails / fail_timeout are PASSIVE health checks: after {{ nginx_upstream_max_fails }} failures
+    # within {{ nginx_upstream_fail_timeout }}, nginx stops using that backend for {{ nginx_upstream_fail_timeout }}, then retries.
+    #
+    # nginx open source has no ACTIVE health checking — it never probes an idle
+    # backend, it only learns from real requests failing. So the first request
+    # after a backend dies is the one that discovers it.
+{% for backend in nginx_upstream_servers %}
+    server {{ backend.server }}{% if backend.weight is defined %} weight={{ backend.weight }}{% endif %} max_fails={{ backend.max_fails | default(nginx_upstream_max_fails) }} fail_timeout={{ backend.fail_timeout | default(nginx_upstream_fail_timeout) }};
+{% endfor %}
+{% if nginx_upstream_keepalive > 0 %}
+
+    # Idle connections kept open for reuse. Requires proxy_http_version 1.1 and
+    # an empty Connection header — both set in the proxy snippet. Without those
+    # this directive silently does nothing.
+    keepalive {{ nginx_upstream_keepalive }};
+{% endif %}
+}
+{% if nginx_redirect_http %}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HTTP — redirect to HTTPS
+# ═══════════════════════════════════════════════════════════════════════════
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ nginx_server_name }}{% for host in django_allowed_hosts | default([]) %}{% if host != nginx_server_name and host != '*' %} {{ host }}{% endif %}{% endfor %};
+
+    # Let certbot answer the ACME challenge over plain HTTP without being
+    # redirected. Harmless with the internal CA, and required the moment you
+    # move to Let's Encrypt.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+{% endif %}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HTTPS — the platform
+# ═══════════════════════════════════════════════════════════════════════════
+server {
+{% if nginx_ssl_enabled %}
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+{% else %}
+    listen 80;
+    listen [::]:80;
+{% endif %}
+    server_name {{ nginx_server_name }};
+{% if nginx_ssl_enabled %}
+
+    # ── TLS ─────────────────────────────────────────────────────────────────
+    # FULLCHAIN, not the bare certificate. Serving the leaf alone gives clients
+    # "unable to get local issuer certificate" unless they already hold the CA.
+    ssl_certificate {{ nginx_ssl_certificate }};
+    ssl_certificate_key {{ nginx_ssl_certificate_key }};
+{% if nginx_ssl_stapling %}
+    ssl_stapling on;
+    ssl_stapling_verify on;
+{% endif %}
+{% endif %}
+
+    # ── Headers ─────────────────────────────────────────────────────────────
+    # Applies to this server block — but NOT to any location below that adds a
+    # header of its own. Those include this snippet again; see the note in it.
+    include snippets/jengasec-security-headers.conf;
+
+    # ── Logging ─────────────────────────────────────────────────────────────
+    access_log {{ nginx_log_dir }}/jengasec-access.log {{ nginx_access_log_format }};
+    error_log {{ nginx_log_dir }}/jengasec-error.log warn;
+
+    # Matches client_max_body_size in nginx.conf. Restated here so raising the
+    # upload limit for this site does not need a global change.
+    client_max_body_size {{ nginx_client_max_body_size }};
+{% if nginx_limit_conn_enabled %}
+
+    limit_conn jengasec_conn {{ nginx_limit_conn_per_ip }};
+{% endif %}
+
+    # ── Static files ────────────────────────────────────────────────────────
+    # Public assets: CSS, JS, logos. Written by `manage.py collectstatic`.
+    location /static/ {
+        alias {{ nginx_static_dir }}/;
+
+        # Long expiry is safe: Django's staticfiles storage puts a hash in the
+        # filename, so a changed file is a new URL.
+        expires {{ nginx_static_expires }};
+        add_header Cache-Control "public, immutable";
+
+        # Re-included because the add_header above would otherwise drop every
+        # security header in this location.
+        include snippets/jengasec-security-headers.conf;
+
+        access_log off;
+        try_files $uri =404;
+    }
+
+    # ── Media files ─────────────────────────────────────────────────────────
+    # UPLOADED SUBMISSIONS. Not public assets — competitor documents, read by
+    # judges.
+    location /media/ {
+        alias {{ nginx_media_dir }}/;
+{% if nginx_media_force_download %}
+
+        # Served as an ATTACHMENT, never rendered inline.
+        #
+        # An uploaded SVG or HTML file rendered in the browser executes script
+        # in THIS origin. On a platform where competitors upload files that
+        # judges open, that is a direct route to stealing a judge's session and
+        # rewriting scores. Forcing download is the cheap, complete fix.
+        add_header Content-Disposition "attachment" always;
+        add_header X-Content-Type-Options "nosniff" always;
+{% endif %}
+        include snippets/jengasec-security-headers.conf;
+
+        # No expiry: a submission may be replaced before the deadline, and a
+        # cached old version being marked is the worst possible outcome.
+        expires off;
+        add_header Cache-Control "private, no-cache";
+
+        try_files $uri =404;
+    }
+
+    # ── Login ───────────────────────────────────────────────────────────────
+    # Rate limited hard. This is the one endpoint where credentials are
+    # submitted, and the accounts behind it control scoring.
+    #
+    # burst allows a short run above the rate — a person mistyping a password
+    # twice is normal; nodelay means the burst is served immediately rather than
+    # queued, so legitimate users see no lag.
+    location = /login/ {
+{% if nginx_rate_limit_enabled %}
+        limit_req zone=jengasec_login burst={{ nginx_rate_limit_burst_login }} nodelay;
+{% endif %}
+        include snippets/jengasec-proxy.conf;
+        proxy_pass http://{{ nginx_upstream_name }};
+    }
+
+    # ── Admin ───────────────────────────────────────────────────────────────
+    # Django admin. Full control over every model, so it gets the login rate
+    # limit rather than the general one.
+    #
+    # Consider restricting by source address once you know where admins connect
+    # from: allow {{ jengasec_network_cidr | default('10.0.0.0/24') }}; deny all;
+    location /admin/ {
+{% if nginx_rate_limit_enabled %}
+        limit_req zone=jengasec_login burst={{ nginx_rate_limit_burst_login }} nodelay;
+{% endif %}
+        include snippets/jengasec-proxy.conf;
+        proxy_pass http://{{ nginx_upstream_name }};
+    }
+
+    # ── Health check ────────────────────────────────────────────────────────
+    # Proxied to Django, which runs SELECT 1 and returns 200 or 503. Not logged,
+    # because a monitoring probe every 30s would otherwise dominate the log.
+    location = /healthz/ {
+        access_log off;
+        include snippets/jengasec-proxy.conf;
+        proxy_pass http://{{ nginx_upstream_name }};
+    }
+
+    # ── Everything else ─────────────────────────────────────────────────────
+    location / {
+{% if nginx_rate_limit_enabled %}
+        limit_req zone=jengasec_general burst={{ nginx_rate_limit_burst_general }} nodelay;
+{% endif %}
+        include snippets/jengasec-proxy.conf;
+        proxy_pass http://{{ nginx_upstream_name }};
+    }
+
+    # ── Denied paths ────────────────────────────────────────────────────────
+    # Probes for these are never legitimate on a Django site — nothing here uses
+    # PHP or WordPress. `nginx-botsearch` in fail2ban bans the source after two
+    # attempts; returning 444 (close without responding) costs nothing in the
+    # meantime.
+    location ~* \.(php|asp|aspx|jsp)$ {
+        return 444;
+    }
+
+    location ~* /(wp-admin|wp-login|phpmyadmin|\.env|\.git) {
+        return 444;
+    }
+
+    # Dotfiles. Blocks /.git/config and similar even if one ended up under a
+    # served root by accident.
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 444;
+    }
+}

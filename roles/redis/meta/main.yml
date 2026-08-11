@@ -3,7 +3,7 @@ galaxy_info:
   role_name: redis
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: In-memory cache, session store, and future Celery broker.
+  description: Redis cache and session store, hardened and memory-capped.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,7 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - redis
+    - cache
 
 dependencies: []

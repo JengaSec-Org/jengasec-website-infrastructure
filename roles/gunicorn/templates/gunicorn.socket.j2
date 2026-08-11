@@ -1,0 +1,35 @@
+# {{ common_managed_banner }}
+#
+# The listening socket for the JengaSec application.
+#
+# systemd creates and owns this socket, then passes the listening file
+# descriptor to gunicorn. Two things follow, and both matter:
+#
+#   1. The socket exists with correct ownership BEFORE gunicorn starts, so nginx
+#      never races a half-started application and returns 502.
+#   2. A request arriving while gunicorn is restarting is queued by the kernel
+#      rather than refused — a deployment becomes a pause, not an error page.
+
+[Unit]
+Description=JengaSec gunicorn socket
+Documentation=https://github.com/JengaSec-Org/jengasec-infrastructure
+
+[Socket]
+ListenStream={{ gunicorn_socket_path }}
+
+# Ownership is the whole reason this file needs care.
+#
+# Owned by {{ gunicorn_socket_user }}, group {{ gunicorn_socket_group }} (nginx's user), mode {{ gunicorn_socket_mode }}.
+# Group-writable is REQUIRED: without it every request returns 502, the error
+# appears only in nginx's log as "permission denied", and gunicorn's own log
+# shows nothing at all — which sends people debugging the wrong service.
+SocketUser={{ gunicorn_socket_user }}
+SocketGroup={{ gunicorn_socket_group }}
+SocketMode={{ gunicorn_socket_mode }}
+
+# Queue depth for connections arriving faster than gunicorn accepts them. This
+# is the buffer that absorbs a restart.
+Backlog=2048
+
+[Install]
+WantedBy=sockets.target

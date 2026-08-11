@@ -1,42 +1,285 @@
 ---
 # django — Phase 4
-# Deploy the JengaSec platform: code, virtualenv, environment, migrations.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Clone or update the application repository at app_repo_branch
-#   - Create the virtualenv and install requirements.txt
-#   - Render the .env file from vault-backed variables
-#   - Run manage.py migrate
-#   - Run manage.py collectstatic
-#   - Set ownership and permissions on media and static directories
-#   - Notify the gunicorn handler to reload
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# The only role that touches application state: code, dependencies, database
+# schema, static files. Everything here runs as the app user, never as root.
 
-- name: Refuse to run — the django role is not implemented yet
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Refuse to deploy with DEBUG enabled
+  ansible.builtin.assert:
+    that:
+      - not (django_debug | bool)
+    fail_msg: >-
+      django_debug is true for {{ inventory_hostname }}. With DEBUG on, Django
+      serves a full traceback — including settings and environment — to anyone
+      who triggers an error, and ALLOWED_HOSTS stops being enforced. Never on a
+      host reachable by competitors.
+    success_msg: "DEBUG is off"
+  when: jengasec_environment | default('production') == 'production'
+  tags: [django, always]
+
+- name: Refuse to deploy without ALLOWED_HOSTS
+  ansible.builtin.assert:
+    that:
+      - django_allowed_hosts | length > 0
+    fail_msg: >-
+      django_allowed_hosts is empty. With DEBUG off, Django returns 400 for
+      every request whose Host header is not listed — the site would answer
+      nothing at all. Set it in group_vars/web/main.yml.
+    success_msg: "ALLOWED_HOSTS: {{ django_allowed_hosts | join(', ') }}"
+  tags: [django, always]
+
+# ── Directories ─────────────────────────────────────────────────────────────
+
+- name: Create the application directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ django_user }}"
+    group: "{{ item.group | default(django_group) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ app_root | default('/opt/jengasec') }}", mode: "0750" }
+    - { path: "{{ django_log_dir }}", mode: "0750", group: adm }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [django, directories]
+
+# ── Source ──────────────────────────────────────────────────────────────────
+
+- name: Clone or update the platform repository
+  ansible.builtin.git:
+    repo: "{{ django_repo_url }}"
+    dest: "{{ django_source_dir }}"
+    version: "{{ django_repo_version }}"
+    force: "{{ django_force_checkout | bool }}"
+    accept_hostkey: false        # host keys come from the `git` role, deliberately
+  become: true
+  become_user: "{{ django_user }}"
+  register: django_checkout
+  notify: Reload gunicorn
+  tags: [django, source]
+
+- name: Report the deployed revision
+  ansible.builtin.debug:
+    msg: >-
+      {{ django_source_dir }} is at
+      {{ django_checkout.after | default('unknown') | truncate(12, true, '') }}
+      ({{ django_repo_version }})
+      {{ '— CHANGED from ' ~ (django_checkout.before | default('nothing') | truncate(12, true, ''))
+         if django_checkout.changed else '— unchanged' }}
+  tags: [django, source]
+
+# The platform needs settings.py changes to work behind a TLS proxy: without
+# SECURE_PROXY_SSL_HEADER and CSRF_TRUSTED_ORIGINS, Django rejects every login
+# POST. Catching an old checkout here is far better than discovering it at the
+# login page during the event.
+- name: Check the checkout has the proxy and CSRF settings
+  ansible.builtin.shell:
+    cmd: >-
+      grep -qs 'SECURE_PROXY_SSL_HEADER' {{ django_source_dir }}/config/settings.py &&
+      grep -qs 'CSRF_TRUSTED_ORIGINS' {{ django_source_dir }}/config/settings.py
+  args:
+    executable: /bin/bash
+  register: django_proxy_settings
+  changed_when: false
+  failed_when: false
+  tags: [django, source]
+
+- name: Refuse a checkout that will reject every login
+  ansible.builtin.assert:
+    that:
+      - django_proxy_settings.rc == 0
+    fail_msg: >-
+      config/settings.py in this checkout does not set SECURE_PROXY_SSL_HEADER
+      and CSRF_TRUSTED_ORIGINS. Behind nginx with TLS, Django will reject EVERY
+      login POST with a CSRF error that does not name the cause. The site would
+      deploy cleanly and then be unusable. Update the platform repository — see
+      docs/pre-deployment.md, "Platform-side changes".
+    success_msg: "Checkout handles the reverse proxy correctly"
+  when: django_require_proxy_settings | bool
+  tags: [django, source]
+
+# ── Virtualenv ──────────────────────────────────────────────────────────────
+
+- name: Create the virtualenv
+  ansible.builtin.command:
+    cmd: "{{ django_python }} -m venv {{ django_venv_dir }}"
+    creates: "{{ django_venv_dir }}/bin/python"
+  become: true
+  become_user: "{{ django_user }}"
+  tags: [django, venv]
+
+- name: Upgrade pip inside the virtualenv
+  ansible.builtin.pip:
+    name:
+      - pip
+      - setuptools
+      - wheel
+    state: latest
+    virtualenv: "{{ django_venv_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  tags: [django, venv]
+
+# Reports changed only when a package is actually installed or upgraded, so the
+# second run of the playbook stays clean.
+- name: Install the application requirements
+  ansible.builtin.pip:
+    requirements: "{{ django_requirements_file }}"
+    virtualenv: "{{ django_venv_dir }}"
+    state: present
+  become: true
+  become_user: "{{ django_user }}"
+  notify: Reload gunicorn
+  tags: [django, venv]
+
+# ── Environment ─────────────────────────────────────────────────────────────
+
+# 0640, owned by the app user. It holds DJANGO_SECRET_KEY and the database
+# password, and systemd reads it as EnvironmentFile for the gunicorn unit.
+- name: Write the application environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ django_env_file }}"
+    owner: "{{ django_user }}"
+    group: "{{ django_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Reload gunicorn
+  tags: [django, env]
+
+# ── Database ────────────────────────────────────────────────────────────────
+
+# Fail here with a clear message rather than letting migrate produce a wall of
+# psycopg2 traceback that does not mention the firewall.
+- name: Verify the database is reachable
+  ansible.builtin.command:
+    cmd: "{{ django_manage }} check --database default"
+  args:
+    chdir: "{{ django_source_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  environment:
+    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  register: django_db_check
+  changed_when: false
+  failed_when: false
+  tags: [django, database]
+
+- name: Explain an unreachable database
   ansible.builtin.fail:
     msg: >-
-      The 'django' role is a Phase 4 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/django/README.md.
-  when: not django_enabled | bool
-  tags:
-    - django
-    - stub
+      Django cannot reach PostgreSQL at
+      {{ django_db_host }}:{{ django_db_port }}. Check, in this order: the
+      database role has run on {{ django_db_host }}; the firewall on that host
+      allows 5432 from {{ ansible_default_ipv4.address | default('this host') }};
+      pg_hba.conf has an entry for user '{{ django_db_user }}' from this
+      address. Output was:
+      {{ django_db_check.stderr | default(django_db_check.stdout) | default('') | truncate(400) }}
+  when: django_db_check.rc != 0
+  tags: [django, database]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install django
-#   ansible.builtin.apt:
-#     name: "{{ django_packages }}"
-#     state: present
-#   when: django_enabled | bool
-#   notify: Restart django
+# Migrations are not idempotent in the Ansible sense — they are idempotent in
+# Django's, which is what matters. Re-running applies nothing new, so the task
+# is marked changed only when Django says it applied something.
+- name: Run database migrations
+  ansible.builtin.command:
+    cmd: "{{ django_manage }} migrate --noinput"
+  args:
+    chdir: "{{ django_source_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  environment:
+    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  register: django_migrate
+  changed_when: "'No migrations to apply' not in (django_migrate.stdout | default(''))"
+  when: django_run_migrations | bool
+  tags: [django, database, migrate]
+
+- name: Report migration results
+  ansible.builtin.debug:
+    msg: "{{ django_migrate.stdout_lines | default(['skipped']) | select('search', 'Applying|No migrations') | list }}"
+  when: django_run_migrations | bool
+  tags: [django, database, migrate]
+
+# ── Static files ────────────────────────────────────────────────────────────
+
+# nginx serves these from disk. It is not an optimisation: whitenoise is in
+# requirements.txt but not in MIDDLEWARE, so with DEBUG off Django serves no
+# static files at all. Skip this and the site renders unstyled.
+- name: Collect static files
+  ansible.builtin.command:
+    cmd: "{{ django_manage }} collectstatic --noinput"
+  args:
+    chdir: "{{ django_source_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  environment:
+    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  register: django_collect
+  changed_when: "'0 static files copied' not in (django_collect.stdout | default(''))"
+  when: django_collectstatic | bool
+  tags: [django, static]
+
+# ── Permissions ─────────────────────────────────────────────────────────────
+
+# Static is world-readable so nginx can serve it. Media is 0750 group www-data:
+# submissions are not public files, and nginx reads them through group
+# membership rather than through world permissions.
+- name: Set ownership on static and media
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ django_user }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+    recurse: true
+  loop:
+    - { path: "{{ django_static_dir }}", group: "www-data", mode: "0755" }
+    - { path: "{{ django_media_dir }}", group: "www-data", mode: "0750" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [django, permissions]
+
+# ── Deployment check ────────────────────────────────────────────────────────
+
+# A report, not a gate. Some of its warnings — SECURE_SSL_REDIRECT, for one —
+# are correctly answered by nginx rather than by Django, so failing on them
+# would be wrong.
+- name: Run Django's deployment check
+  ansible.builtin.command:
+    cmd: "{{ django_manage }} check --deploy"
+  args:
+    chdir: "{{ django_source_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  environment:
+    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  register: django_deploy_check
+  changed_when: false
+  failed_when: false
+  when: django_run_deploy_check | bool
+  tags: [django, verify]
+
+- name: Report the deployment check
+  ansible.builtin.debug:
+    msg: >-
+      {{ django_deploy_check.stderr_lines | default([]) | select('search', '^\\?:') | list
+         | default(['no warnings'], true) }}
+      (SECURE_SSL_REDIRECT and SECURE_HSTS_SECONDS warnings are expected —
+      nginx handles both.)
+  when: django_run_deploy_check | bool
+  tags: [django, verify]
+
+- name: Remind about the superuser
+  ansible.builtin.debug:
+    msg: >-
+      No superuser is created automatically — doing so would put its password in
+      a variable, and this account can see every submission and change every
+      score. Create it once, by hand:
+      sudo -u {{ django_user }} {{ django_venv_dir }}/bin/python
+      {{ django_source_dir }}/manage.py createsuperuser
+  when: not (django_superuser_create | bool)
+  tags: [django, verify]

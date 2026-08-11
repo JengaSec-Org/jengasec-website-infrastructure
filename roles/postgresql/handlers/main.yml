@@ -1,13 +1,24 @@
 ---
 # Handlers for the `postgresql` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
+# Reload for almost everything: postgresql.conf values marked "sighup" and all
+# of pg_hba.conf. Existing connections are untouched, which on a database
+# holding live judging sessions is the difference between a config change and
+# an incident.
+- name: Reload postgresql
+  ansible.builtin.systemd:
+    name: "{{ postgresql_service_name }}"
+    state: reloaded
+  listen: "reload postgresql"
+
+# Restart ONLY for settings read at startup — shared_preload_libraries,
+# shared_buffers, max_connections.
+#
+# This drops every open connection. Django will reconnect, but any request
+# in flight fails. The role only reaches this handler when a preloaded library
+# genuinely changed, and says so in the task that notifies it.
 - name: Restart postgresql
   ansible.builtin.systemd:
-    name: "{{ postgresql_service_name | default('postgresql') }}"
+    name: "{{ postgresql_service_name }}"
     state: restarted
-    daemon_reload: true
   listen: "restart postgresql"
-  when: postgresql_enabled | bool

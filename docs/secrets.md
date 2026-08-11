@@ -46,16 +46,42 @@ mkpasswd --method=sha-512
 
 ## The vault password
 
-`ansible.cfg` points at `.vault_pass`, which is gitignored:
+You have two options. Neither is set up by default, deliberately — see the note
+below.
+
+**Option 1 — a password file.** Convenient for repeated runs:
 
 ```bash
 echo 'your-vault-password' > .vault_pass
 chmod 600 .vault_pass
 ```
 
+Then uncomment this line in `ansible.cfg`:
+
+```ini
+vault_password_file  = .vault_pass
+```
+
 `chmod 600` matters. At the default `644`, every local account on the control
 node can read the password that decrypts every secret in the infrastructure.
 `preflight.sh` checks this.
+
+**Option 2 — type it each time.** Nothing to configure, nothing on disk:
+
+```bash
+ansible-playbook -i inventories/production playbooks/bootstrap.yml --ask-vault-pass
+```
+
+### Why `vault_password_file` ships commented out
+
+When it is set and the file does not exist, Ansible refuses to run **any**
+command — including `--syntax-check` and anything against the development
+inventory, neither of which touches a vault. That turns "clone the repo and
+check it parses" into a confusing error about a missing password file, on a
+repository that has no secrets in it yet.
+
+So it is commented out with instructions. Uncomment it once `.vault_pass`
+actually exists.
 
 **Share the vault password out of band** — in person, or through the club's
 password manager. Never in the repository, never in chat, never in email.

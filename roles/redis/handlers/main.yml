@@ -1,13 +1,19 @@
 ---
 # Handlers for the `redis` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
+- name: Reload systemd for redis
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "reload systemd for redis"
+
+# Restart, not reload — Redis has no config reload. Acceptable here precisely
+# because it is treated as a cache: the contents are regenerable, sessions are
+# the only real cost, and persistence is off anyway.
+#
+# If Celery task state ever moves into Redis, revisit this: losing a queue
+# mid-competition is a different kind of problem.
 - name: Restart redis
   ansible.builtin.systemd:
-    name: "{{ redis_service_name | default('redis') }}"
+    name: "{{ redis_service_name }}"
     state: restarted
-    daemon_reload: true
   listen: "restart redis"
-  when: redis_enabled | bool

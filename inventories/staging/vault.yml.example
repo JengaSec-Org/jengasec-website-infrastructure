@@ -1,0 +1,68 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGING vault template.
+#
+#   cp vault.yml.example vault.yml
+#   # edit vault.yml
+#   ansible-vault encrypt vault.yml
+#
+# Same keys as production, so a playbook that works in staging works there.
+# See docs/secrets.md.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  USE DIFFERENT VALUES FROM PRODUCTION.                                    │
+# │                                                                           │
+# │  Staging exists to be broken. If it shares a password with production,    │
+# │  breaking staging breaks production too — and staging is the environment  │
+# │  where DJANGO_DEBUG is true, tracebacks are public, and people try things │
+# │  precisely because it is safe to.                                         │
+# │                                                                           │
+# │  The placeholders below are deliberately obvious. If one of these ever    │
+# │  turns up on a production host, you want to notice immediately.           │
+# └───────────────────────────────────────────────────────────────────────────┘
+
+# ── Django ──────────────────────────────────────────────────────────────────
+# Still generate a real one — a predictable key makes session forgery trivial,
+# and staging often holds a copy of real data.
+#   python3 -c "import secrets; print(secrets.token_urlsafe(64))"
+vault_django_secret_key: "STAGING_CHANGE_ME_generate_a_real_random_string"
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+vault_postgresql_jengasec_password: "STAGING_CHANGE_ME"
+vault_postgresql_replication_password: "STAGING_CHANGE_ME"
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+vault_redis_password: "STAGING_CHANGE_ME"
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+vault_grafana_admin_password: "STAGING_CHANGE_ME"
+
+# ── SMTP ────────────────────────────────────────────────────────────────────
+# Point staging at a local catch-all, never at the real mail server. Otherwise a
+# test run emails real judges and team members.
+vault_smtp_host: "localhost"
+vault_smtp_port: 25
+vault_smtp_user: "staging@localhost"
+vault_smtp_password: "STAGING_CHANGE_ME"
+
+# ── Local account passwords ─────────────────────────────────────────────────
+# A HASH, not a plaintext password:
+#   mkpasswd --method=sha-512
+vault_jengasec_password_hash: "$6$STAGING_CHANGE_ME"
+
+# ── Internal certificate authority ──────────────────────────────────────────
+# A SEPARATE staging CA. Sharing the production CA key with a throwaway
+# environment means anyone who compromises staging can issue a certificate
+# trusted by production.
+vault_ca_passphrase: "STAGING_CHANGE_ME"
+
+# ── Backup encryption ───────────────────────────────────────────────────────
+vault_backup_gpg_passphrase: "STAGING_CHANGE_ME"
+
+# ── Cloudflare (Phase 9, role is a stub) ────────────────────────────────────
+vault_cloudflare_api_token: "STAGING_CHANGE_ME"
+vault_cloudflare_zone_id: "STAGING_CHANGE_ME"
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+#   rndc-confgen -a
+vault_rndc_key: "STAGING_CHANGE_ME"

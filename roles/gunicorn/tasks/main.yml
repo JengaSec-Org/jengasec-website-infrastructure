@@ -1,41 +1,129 @@
 ---
 # gunicorn — Phase 4
-# WSGI application server running the Django project under systemd.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Install gunicorn into the application virtualenv
-#   - Render the systemd unit and socket unit
-#   - Worker count, class, and timeout tuning
-#   - Unix socket ownership shared with the nginx user
-#   - Log destinations under app_log_dir
-#   - Graceful reload on deployment
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Owns the systemd units and the socket. The gunicorn PACKAGE is installed into
+# the virtualenv by the `django` role, because it is listed in the platform's
+# requirements.txt and belongs with the rest of the application's dependencies.
 
-- name: Refuse to run — the gunicorn role is not implemented yet
-  ansible.builtin.fail:
+- name: Ensure the log directory exists
+  ansible.builtin.file:
+    path: "{{ app_log_dir | default('/var/log/jengasec') }}"
+    state: directory
+    owner: "{{ gunicorn_user }}"
+    group: adm
+    mode: "0750"
+  tags: [gunicorn, directories]
+
+# ── Units ───────────────────────────────────────────────────────────────────
+#
+# A socket unit and a service unit, not just a service.
+#
+# systemd creates and owns the socket, then hands the listening file descriptor
+# to gunicorn. Two things follow: the socket exists with correct ownership
+# before gunicorn starts (so nginx never races it), and a request arriving while
+# gunicorn is restarting is queued by the kernel rather than refused.
+
+- name: Install the gunicorn socket unit
+  ansible.builtin.template:
+    src: gunicorn.socket.j2
+    dest: "/etc/systemd/system/{{ gunicorn_socket_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd for gunicorn
+    - Restart gunicorn socket
+  tags: [gunicorn, units]
+
+- name: Install the gunicorn service unit
+  ansible.builtin.template:
+    src: gunicorn.service.j2
+    dest: "/etc/systemd/system/{{ gunicorn_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd for gunicorn
+    - Restart gunicorn
+  tags: [gunicorn, units]
+
+- name: Reload systemd so the new units are visible
+  ansible.builtin.meta: flush_handlers
+  tags: [gunicorn]
+
+# ── Enable ──────────────────────────────────────────────────────────────────
+
+# The SOCKET is enabled, not the service. systemd starts the service on the
+# first connection and on boot via the socket's WantedBy — enabling both would
+# start gunicorn twice on boot and produce a confusing "address in use".
+- name: Enable and start the gunicorn socket
+  ansible.builtin.systemd:
+    name: "{{ gunicorn_socket_name }}"
+    enabled: true
+    state: started
+  tags: [gunicorn, service]
+
+# Started explicitly so the deployment is complete rather than waiting for the
+# first request, which would make the first visitor pay Django's start-up cost.
+- name: Start the gunicorn service
+  ansible.builtin.systemd:
+    name: "{{ gunicorn_service_name }}"
+    state: started
+  register: gunicorn_started
+  failed_when: false
+  tags: [gunicorn, service]
+
+# The service cannot start before the `django` role has created the virtualenv
+# and checked out the code. On a first run through platform.yml that ordering is
+# handled, but running this role alone on a bare host will fail here — say so
+# clearly rather than leaving a cryptic systemd error.
+- name: Explain a failed start
+  ansible.builtin.debug:
     msg: >-
-      The 'gunicorn' role is a Phase 4 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/gunicorn/README.md.
-  when: not gunicorn_enabled | bool
-  tags:
-    - gunicorn
-    - stub
+      gunicorn did not start. On a first run this usually means the application
+      is not deployed yet — {{ gunicorn_executable }} does not exist until the
+      `django` role has created the virtualenv. Run playbooks/platform.yml,
+      which orders the roles correctly. Otherwise:
+      journalctl -u {{ gunicorn_service_name }} -n 50
+  when: gunicorn_started is failed or (gunicorn_started.state | default('')) == 'stopped'
+  tags: [gunicorn, service]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install gunicorn
-#   ansible.builtin.apt:
-#     name: "{{ gunicorn_packages }}"
-#     state: present
-#   when: gunicorn_enabled | bool
-#   notify: Restart gunicorn
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Check the socket exists with the right ownership
+  ansible.builtin.stat:
+    path: "{{ gunicorn_socket_path }}"
+  register: gunicorn_socket_stat
+  tags: [gunicorn, verify]
+
+# The single most common cause of a 502 from nginx: the socket exists but nginx
+# cannot write to it. The error appears in nginx's log, not gunicorn's, which
+# sends people looking in the wrong place.
+- name: Report the socket state
+  ansible.builtin.debug:
+    msg: >-
+      {{ gunicorn_socket_path }}
+      {{ 'exists, owner ' ~ gunicorn_socket_stat.stat.pw_name | default('?') ~
+         ':' ~ gunicorn_socket_stat.stat.gr_name | default('?') ~
+         ' mode ' ~ gunicorn_socket_stat.stat.mode | default('?')
+         if gunicorn_socket_stat.stat.exists
+         else 'DOES NOT EXIST — nginx will return 502' }}.
+      nginx runs as www-data and must be able to write to it.
+  tags: [gunicorn, verify]
+
+- name: Confirm the service is active
+  ansible.builtin.command:
+    cmd: "systemctl is-active {{ gunicorn_service_name }}"
+  register: gunicorn_active
+  changed_when: false
+  failed_when: false
+  tags: [gunicorn, verify]
+
+- name: Report worker count and state
+  ansible.builtin.debug:
+    msg: >-
+      gunicorn is {{ gunicorn_active.stdout | default('unknown') }} with
+      {{ gunicorn_workers }} {{ gunicorn_worker_class }} workers, timeout
+      {{ gunicorn_timeout }}s. Note this must stay BELOW nginx's
+      proxy_read_timeout or nginx gives up first and the user sees a 504.
+  tags: [gunicorn, verify]

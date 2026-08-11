@@ -1,43 +1,224 @@
 ---
 # nginx — Phase 4
-# Reverse proxy and TLS terminator in front of gunicorn.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Reverse proxy to the gunicorn socket
-#   - TLS termination using the certificates role output
-#   - Security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options)
-#   - Static file serving from app_static_dir
-#   - Media file serving from app_media_dir, with execution disabled
-#   - gzip compression and proxy caching
-#   - Rate limiting on /login/ and /admin/
-#   - Access and error logging, with logrotate
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Reverse proxy, load balancer, and the only thing serving static and media.
 
-- name: Refuse to run — the nginx role is not implemented yet
-  ansible.builtin.fail:
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Assert at least one upstream backend is defined
+  ansible.builtin.assert:
+    that:
+      - nginx_upstream_servers | length > 0
+    fail_msg: >-
+      nginx_upstream_servers is empty. nginx would start with an upstream block
+      containing no servers, and nginx -t rejects that — the play fails here
+      instead, with a message that says why.
+    success_msg: >-
+      {{ nginx_upstream_servers | length }} backend(s),
+      balanced with {{ nginx_upstream_method | default('round-robin') }}
+  tags: [nginx, always]
+
+# gunicorn_timeout is 120 by default and proxy_read_timeout 180. If someone
+# raises the former past the latter, nginx returns 504 while the worker is
+# still doing useful work — and the request completes into a connection nobody
+# is listening to.
+- name: Assert the proxy timeout exceeds the gunicorn timeout
+  ansible.builtin.assert:
+    that:
+      - (nginx_proxy_read_timeout | int) > (gunicorn_timeout | default(120) | int)
+    fail_msg: >-
+      nginx_proxy_read_timeout ({{ nginx_proxy_read_timeout }}s) is not greater
+      than gunicorn_timeout ({{ gunicorn_timeout | default(120) }}s). nginx
+      would give up first and show a 504 while the worker is still working.
+    success_msg: >-
+      Timeouts agree — nginx {{ nginx_proxy_read_timeout }}s >
+      gunicorn {{ gunicorn_timeout | default(120) }}s
+  tags: [nginx, always]
+
+- name: Warn when sticky sessions are pointless
+  ansible.builtin.debug:
     msg: >-
-      The 'nginx' role is a Phase 4 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/nginx/README.md.
-  when: not nginx_enabled | bool
-  tags:
-    - nginx
-    - stub
+      nginx_sticky_sessions is on with only one backend. ip_hash REPLACES
+      {{ nginx_upstream_method }}, so this currently costs balancing quality and
+      buys nothing. It also puts everyone behind a single NAT address on one
+      backend. Turn it off unless you have several backends and a real reason.
+  when:
+    - nginx_sticky_sessions | bool
+    - nginx_upstream_servers | length < 2
+  tags: [nginx, always]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install nginx
-#   ansible.builtin.apt:
-#     name: "{{ nginx_packages }}"
-#     state: present
-#   when: nginx_enabled | bool
-#   notify: Restart nginx
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Install nginx
+  ansible.builtin.apt:
+    name: "{{ nginx_packages }}"
+    state: present
+  tags: [nginx, packages]
+
+- name: Create the snippets directory
+  ansible.builtin.file:
+    path: "{{ nginx_conf_dir }}/snippets"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [nginx, config]
+
+# ── TLS certificate ─────────────────────────────────────────────────────────
+
+- name: Check the TLS certificate exists
+  ansible.builtin.stat:
+    path: "{{ nginx_ssl_certificate }}"
+  register: nginx_cert
+  when: nginx_ssl_enabled | bool
+  tags: [nginx, tls]
+
+# nginx will not start without the certificate it is configured to use, and the
+# failure appears as a systemd start error rather than anything about TLS.
+- name: Refuse to configure TLS without a certificate
+  ansible.builtin.assert:
+    that:
+      - nginx_cert.stat.exists
+    fail_msg: >-
+      {{ nginx_ssl_certificate }} does not exist. Run the `certificates` role
+      first — playbooks/networking.yml includes it. Note this must be the
+      FULLCHAIN file: serving the leaf alone gives clients
+      "unable to get local issuer certificate".
+    success_msg: "TLS certificate present"
+  when: nginx_ssl_enabled | bool
+  tags: [nginx, tls]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+- name: Write nginx.conf
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_conf_dir }}/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    validate: "nginx -t -c %s"
+  notify: Reload nginx
+  tags: [nginx, config]
+
+- name: Install the shared proxy parameters
+  ansible.builtin.template:
+    src: proxy_params.j2
+    dest: "{{ nginx_conf_dir }}/snippets/jengasec-proxy.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+  tags: [nginx, config]
+
+- name: Install the security headers snippet
+  ansible.builtin.template:
+    src: security-headers.conf.j2
+    dest: "{{ nginx_conf_dir }}/snippets/jengasec-security-headers.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+  tags: [nginx, config, headers]
+
+# The site config cannot be validated on its own with `nginx -t -c` — that flag
+# expects a whole configuration. It is written, then the full config is
+# validated in one step below, before anything is reloaded.
+- name: Write the JengaSec site configuration
+  ansible.builtin.template:
+    src: jengasec.conf.j2
+    dest: "{{ nginx_conf_dir }}/sites-available/jengasec.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: Reload nginx
+  tags: [nginx, site]
+
+- name: Enable the JengaSec site
+  ansible.builtin.file:
+    src: "{{ nginx_conf_dir }}/sites-available/jengasec.conf"
+    dest: "{{ nginx_conf_dir }}/sites-enabled/jengasec.conf"
+    state: link
+  notify: Reload nginx
+  tags: [nginx, site]
+
+# It answers on port 80 for any unmatched Host, which on a competition network
+# is one more thing responding to a scan with a recognisable default page.
+- name: Remove the default site
+  ansible.builtin.file:
+    path: "{{ nginx_conf_dir }}/sites-enabled/default"
+    state: absent
+  when: nginx_remove_default_site | bool
+  notify: Reload nginx
+  tags: [nginx, site]
+
+# ── Validate then apply ─────────────────────────────────────────────────────
+
+# The whole configuration, including the site and both snippets. If this fails
+# the handler never runs and the live nginx keeps its working config.
+- name: Validate the complete configuration
+  ansible.builtin.command:
+    cmd: nginx -t
+  register: nginx_validate
+  changed_when: false
+  tags: [nginx, config, site]
+
+- name: Apply pending nginx changes
+  ansible.builtin.meta: flush_handlers
+  tags: [nginx]
+
+- name: Enable and start nginx
+  ansible.builtin.systemd:
+    name: "{{ nginx_service_name }}"
+    enabled: true
+    state: started
+  tags: [nginx, service]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Confirm nginx is listening
+  ansible.builtin.shell:
+    cmd: "ss -tlnp | grep -E ':(80|443)\\b' || true"
+  args:
+    executable: /bin/bash
+  register: nginx_listening
+  changed_when: false
+  tags: [nginx, verify]
+
+- name: Report listening sockets
+  ansible.builtin.debug:
+    msg: "{{ nginx_listening.stdout_lines | default(['nginx is not listening']) }}"
+  tags: [nginx, verify]
+
+# Hits nginx over the loopback with the real Host header, following redirects.
+# Proves the vhost matches, TLS works, and the upstream answers.
+- name: Request the site through nginx
+  ansible.builtin.uri:
+    url: "https://127.0.0.1/"
+    headers:
+      Host: "{{ nginx_server_name }}"
+    validate_certs: false      # the internal CA is not in curl's default store
+    follow_redirects: all
+    status_code: [200, 302, 400, 502, 503]
+    timeout: 15
+  register: nginx_probe
+  changed_when: false
+  failed_when: false
+  when: nginx_ssl_enabled | bool
+  tags: [nginx, verify]
+
+# 502 is the one worth naming: it almost always means nginx cannot write to the
+# gunicorn socket, and the evidence is in nginx's log rather than gunicorn's.
+- name: Report the probe result
+  ansible.builtin.debug:
+    msg: >-
+      {{ nginx_server_name }} returned {{ nginx_probe.status | default('no response') }}.
+      {{ '502 means nginx cannot reach gunicorn — check the socket is
+          srw-rw---- jengasec:www-data and that gunicorn is running.'
+         if (nginx_probe.status | default(0)) == 502 else '' }}
+      {{ '503 usually means every upstream backend is marked failed.'
+         if (nginx_probe.status | default(0)) == 503 else '' }}
+  when: nginx_ssl_enabled | bool
+  tags: [nginx, verify]

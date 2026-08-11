@@ -1,0 +1,61 @@
+# {{ common_managed_banner }}
+#
+# Client authentication for {{ inventory_hostname }}.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  ORDER IS LOAD-BEARING.                                                   │
+# │                                                                           │
+# │  PostgreSQL uses the FIRST line that matches connection type, database,   │
+# │  user and address — then stops. It does not keep looking for a better     │
+# │  match, and it does not warn you.                                         │
+# │                                                                           │
+# │  So a broad rule placed above a narrow one silently disables the narrow   │
+# │  one. This file is generated most-specific first for exactly that reason. │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Check what is live:  SELECT * FROM pg_hba_file_rules;
+# Apply changes:       SELECT pg_reload_conf();
+
+# TYPE   DATABASE   USER   ADDRESS   METHOD
+
+# ── Local superuser access ──────────────────────────────────────────────────
+# Peer auth over the Unix socket: the OS user must BE the postgres user. No
+# password involved, and nothing over the network can use it. This is what
+# `sudo -u postgres psql` relies on, and what this role uses.
+local    all    postgres    peer
+
+# ── Local application access ────────────────────────────────────────────────
+# Over the socket, still requiring a password. Useful for `manage.py dbshell`
+# on the database host itself.
+local    all    all    scram-sha-256
+
+# ── Loopback ────────────────────────────────────────────────────────────────
+host     all    all    127.0.0.1/32    scram-sha-256
+host     all    all    ::1/128         scram-sha-256
+{% if postgresql_hba_entries %}
+
+# ── Explicit application rules ──────────────────────────────────────────────
+# From postgresql_hba_entries in group_vars. Each names a single database, a
+# single role, and a single /32 address — deliberately narrow, so that adding a
+# host is a visible change rather than a widened netmask nobody notices.
+{% for entry in postgresql_hba_entries %}
+{{ "%-8s"|format(entry.type) }} {{ "%-14s"|format(entry.database) }} {{ "%-12s"|format(entry.user) }} {{ "%-18s"|format(entry.address | default('')) }} {{ entry.method }}
+{% endfor %}
+{% endif %}
+{% if postgresql_replication_enabled %}
+
+# ── Replication ─────────────────────────────────────────────────────────────
+{% for entry in postgresql_hba_entries | selectattr('database', 'equalto', 'replication') | list %}
+host     replication    {{ postgresql_replication_user }}    {{ entry.address }}    scram-sha-256
+{% endfor %}
+{% endif %}
+
+# ── Everything else ─────────────────────────────────────────────────────────
+# No catch-all rule. Anything not matched above is REJECTED by PostgreSQL's
+# implicit default, which is what we want: a new host cannot connect until
+# someone adds it here deliberately.
+#
+# The failure looks like:
+#   FATAL: no pg_hba.conf entry for host "10.0.0.x", user "...", database "..."
+# That message is unambiguous, which is exactly why no catch-all is added to
+# make it friendlier.

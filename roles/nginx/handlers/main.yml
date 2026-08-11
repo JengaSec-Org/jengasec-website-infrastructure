@@ -1,13 +1,29 @@
 ---
 # Handlers for the `nginx` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
+# Reload, never restart.
+#
+# `reload` starts new worker processes with the new config, lets the old ones
+# finish their in-flight requests, then retires them. Nothing is dropped, and
+# the listening socket never closes.
+#
+# `restart` closes the listening socket. Every request during that window is
+# refused, and if the new config is bad nginx does not come back — on a machine
+# whose only other service is SSH.
+#
+# The full configuration is validated with `nginx -t` before this can run, so a
+# reload here cannot be handed anything unparseable.
+- name: Reload nginx
+  ansible.builtin.systemd:
+    name: "{{ nginx_service_name }}"
+    state: reloaded
+  listen: "reload nginx"
+
+# Only for a change nginx cannot pick up on reload — a new listen port, or a
+# change to `user`. Not notified by anything in this role today; here so that
+# when something needs it, it is not tempting to reuse the reload handler.
 - name: Restart nginx
   ansible.builtin.systemd:
-    name: "{{ nginx_service_name | default('nginx') }}"
+    name: "{{ nginx_service_name }}"
     state: restarted
-    daemon_reload: true
   listen: "restart nginx"
-  when: nginx_enabled | bool

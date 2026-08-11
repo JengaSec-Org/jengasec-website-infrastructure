@@ -1,0 +1,132 @@
+# {{ common_managed_banner }}
+#
+# PostgreSQL {{ postgresql_version }} on {{ inventory_hostname }}
+# ({{ ansible_memtotal_mb | default('?') }} MB RAM)
+#
+# Every memory value here is a FRACTION of this host's RAM. If you move
+# PostgreSQL to a different machine, recalculate — do not copy these numbers.
+#
+# Inspect what is actually live:  SELECT name, setting, source FROM pg_settings;
+# Reload after editing:           SELECT pg_reload_conf();
+
+# ── Connections ─────────────────────────────────────────────────────────────
+listen_addresses = '{{ postgresql_listen_addresses }}'
+port = {{ postgresql_port }}
+
+# Each connection is a separate PROCESS with its own memory, not a thread.
+# "too many connections" is almost never fixed by raising this — it is fixed by
+# pooling. Raising it on a 4 GB box trades stability for a bigger error message.
+max_connections = {{ postgresql_max_connections }}
+
+# ── Memory ──────────────────────────────────────────────────────────────────
+# ~25% of RAM. Higher rarely helps: PostgreSQL leans on the OS page cache for
+# the rest, and a larger value just caches the same pages twice.
+shared_buffers = {{ postgresql_shared_buffers }}
+
+# Allocates NOTHING. It only tells the planner how much cache it can assume,
+# which makes index scans look cheaper relative to sequential ones. 50-75% of
+# RAM, counting the OS page cache.
+effective_cache_size = {{ postgresql_effective_cache_size }}
+
+# Per SORT operation, not per connection and not per query. One query with three
+# sorts, across {{ postgresql_max_connections }} connections, can reach
+# {{ postgresql_max_connections * 3 }}x this value. That arithmetic is why it is small.
+work_mem = {{ postgresql_work_mem }}
+
+# For VACUUM, CREATE INDEX, ALTER TABLE. Only a few run concurrently, so this
+# can be much larger than work_mem.
+maintenance_work_mem = {{ postgresql_maintenance_work_mem }}
+
+# ── Write-ahead log ─────────────────────────────────────────────────────────
+wal_level = {{ postgresql_wal_level }}
+max_wal_size = {{ postgresql_max_wal_size }}
+min_wal_size = {{ postgresql_min_wal_size }}
+
+# Spread checkpoint writes across 90% of the interval rather than flushing in a
+# burst. Without it, every checkpoint is a latency spike — which during judging
+# looks like "the site froze for a moment".
+checkpoint_completion_target = {{ postgresql_checkpoint_completion_target }}
+{% if postgresql_archive_mode %}
+
+# ── WAL archiving ───────────────────────────────────────────────────────────
+# Point-in-time recovery. The archive command MUST succeed reliably: PostgreSQL
+# keeps every segment it could not archive, and once the disk fills it stops
+# accepting writes. Never enable this pointing at a directory nothing drains.
+archive_mode = on
+archive_command = '{{ postgresql_archive_command }}'
+{% else %}
+
+# WAL archiving off. Enable only once the backup role exists to drain the
+# archive directory — see postgresql_archive_mode in defaults/main.yml.
+archive_mode = off
+{% endif %}
+{% if postgresql_replication_enabled %}
+
+# ── Replication ─────────────────────────────────────────────────────────────
+max_wal_senders = {{ postgresql_max_wal_senders }}
+wal_keep_size = {{ postgresql_wal_keep_size }}
+hot_standby = on
+{% endif %}
+
+# ── Storage assumptions ─────────────────────────────────────────────────────
+# 1.1 says random reads cost about the same as sequential — true for SSD.
+# Leave the default 4.0 for spinning disks, or the planner will over-use indexes.
+random_page_cost = {{ postgresql_random_page_cost }}
+effective_io_concurrency = {{ postgresql_effective_io_concurrency }}
+
+# ── Authentication ──────────────────────────────────────────────────────────
+# scram-sha-256, never md5. PostgreSQL's md5 is an unsalted-by-username hash
+# that falls to offline cracking quickly.
+password_encryption = {{ postgresql_password_encryption }}
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+log_destination = 'stderr'
+logging_collector = on
+log_directory = '{{ postgresql_log_dir }}'
+log_filename = 'postgresql-%Y-%m-%d.log'
+log_rotation_age = 1d
+log_rotation_size = 50MB
+log_file_mode = 0640
+
+# %m timestamp, %p pid, %u user, %d database. Having user and database on every
+# line is what makes the log searchable during an incident.
+log_line_prefix = '{{ postgresql_log_line_prefix }}'
+
+# Slow queries only. Logging every statement on a busy database fills the disk
+# and buries the ones that matter.
+log_min_duration_statement = {{ postgresql_log_min_duration_statement }}
+
+log_connections = {{ 'on' if postgresql_log_connections else 'off' }}
+log_disconnections = {{ 'on' if postgresql_log_disconnections else 'off' }}
+log_checkpoints = {{ 'on' if postgresql_log_checkpoints else 'off' }}
+
+# A lock wait usually means two requests are fighting over the same row — worth
+# knowing about before someone reports "saving my score hangs".
+log_lock_waits = {{ 'on' if postgresql_log_lock_waits else 'off' }}
+log_timezone = '{{ postgresql_timezone }}'
+{% if postgresql_shared_preload_libraries %}
+
+# ── Preloaded libraries ─────────────────────────────────────────────────────
+# Read ONLY at startup. Changing this needs a full restart; a reload silently
+# does nothing and the extension then fails to create.
+shared_preload_libraries = '{{ postgresql_shared_preload_libraries | join(",") }}'
+{% if 'pg_stat_statements' in postgresql_shared_preload_libraries %}
+pg_stat_statements.max = 10000
+pg_stat_statements.track = top
+{% endif %}
+{% endif %}
+
+# ── Locale and formatting ───────────────────────────────────────────────────
+datestyle = 'iso, mdy'
+timezone = '{{ postgresql_timezone }}'
+lc_messages = '{{ postgresql_locale }}'
+lc_monetary = '{{ postgresql_locale }}'
+lc_numeric = '{{ postgresql_locale }}'
+lc_time = '{{ postgresql_locale }}'
+default_text_search_config = 'pg_catalog.english'
+
+# ── Statement timeouts ──────────────────────────────────────────────────────
+# A runaway query holds locks and a connection until someone notices. 60s is
+# far longer than any legitimate request from the platform.
+statement_timeout = 60000
+idle_in_transaction_session_timeout = 300000

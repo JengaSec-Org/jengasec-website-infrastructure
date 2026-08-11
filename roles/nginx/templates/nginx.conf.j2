@@ -1,0 +1,128 @@
+# {{ common_managed_banner }}
+#
+# Main nginx configuration for {{ inventory_hostname }}.
+# The JengaSec site itself is in sites-available/jengasec.conf.
+#
+# Validate:  nginx -t
+# Reload:    systemctl reload nginx
+
+user {{ nginx_user }};
+worker_processes {{ nginx_worker_processes }};
+pid /run/nginx.pid;
+
+# Must stay at or below the nofile limit the `os` role sets for services
+# (16384 soft). Above it, nginx logs "too many open files" under load and starts
+# refusing connections while looking otherwise healthy.
+worker_rlimit_nofile {{ nginx_worker_rlimit_nofile }};
+
+error_log {{ nginx_log_dir }}/error.log warn;
+
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections {{ nginx_worker_connections }};
+    # Accept as many new connections as possible per wake-up rather than one.
+    multi_accept {{ 'on' if nginx_multi_accept else 'off' }};
+}
+
+http {
+    # ── Basics ──────────────────────────────────────────────────────────────
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Hides the nginx version from responses and error pages. Free, and one
+    # fewer thing telling a scanner exactly what to look up.
+    server_tokens {{ 'on' if nginx_server_tokens else 'off' }};
+
+    sendfile {{ 'on' if nginx_sendfile else 'off' }};
+    tcp_nopush {{ 'on' if nginx_tcp_nopush else 'off' }};
+    tcp_nodelay {{ 'on' if nginx_tcp_nodelay else 'off' }};
+    types_hash_max_size {{ nginx_types_hash_max_size }};
+
+    keepalive_timeout {{ nginx_keepalive_timeout }};
+    keepalive_requests {{ nginx_keepalive_requests }};
+
+    # ── Request limits ──────────────────────────────────────────────────────
+    # Submission uploads are PDFs and DOCX. Too small and the upload fails with
+    # a 413 that users read as "the site is broken".
+    client_max_body_size {{ nginx_client_max_body_size }};
+    client_body_timeout {{ nginx_client_body_timeout }};
+    client_header_timeout {{ nginx_client_header_timeout }};
+    send_timeout {{ nginx_send_timeout }};
+    large_client_header_buffers 4 16k;
+
+    # ── Logging ─────────────────────────────────────────────────────────────
+    # $request_time is included deliberately: without it you cannot tell a slow
+    # page from a slow client, and during judging that distinction matters.
+    log_format main '$remote_addr - $remote_user [$time_local] '
+                    '"$request" $status $body_bytes_sent '
+                    '"$http_referer" "$http_user_agent" '
+                    'rt=$request_time uct="$upstream_connect_time" '
+                    'uht="$upstream_header_time" urt="$upstream_response_time" '
+                    'upstream=$upstream_addr';
+
+    access_log {{ nginx_log_dir }}/access.log {{ nginx_access_log_format }};
+    log_not_found {{ 'on' if nginx_log_not_found else 'off' }};
+
+    # ── TLS ─────────────────────────────────────────────────────────────────
+    # Defined here so every server block inherits one policy.
+    ssl_protocols {{ nginx_ssl_protocols }};
+    ssl_ciphers {{ nginx_ssl_ciphers }};
+    ssl_prefer_server_ciphers {{ 'on' if nginx_ssl_prefer_server_ciphers else 'off' }};
+    ssl_session_cache {{ nginx_ssl_session_cache }};
+    ssl_session_timeout {{ nginx_ssl_session_timeout }};
+
+    # Session tickets weaken forward secrecy: one leaked ticket key decrypts
+    # every session that used it. The session cache above gives resumption
+    # without that property.
+    ssl_session_tickets {{ 'on' if nginx_ssl_session_tickets else 'off' }};
+{% if nginx_rate_limit_enabled %}
+
+    # ── Rate limiting zones ─────────────────────────────────────────────────
+    # Zones live in the http context; the site config applies them per location.
+    # {{ nginx_rate_limit_zone_size }} of shared memory holds roughly 160k addresses.
+    #
+    # $binary_remote_addr, not $remote_addr — the binary form is 4 bytes rather
+    # than up to 15, so the same zone tracks far more clients.
+    limit_req_zone $binary_remote_addr zone=jengasec_login:{{ nginx_rate_limit_zone_size }} rate={{ nginx_rate_limit_login }};
+    limit_req_zone $binary_remote_addr zone=jengasec_general:{{ nginx_rate_limit_zone_size }} rate={{ nginx_rate_limit_general }};
+
+    # 429 rather than the default 503: 503 says "server broken", 429 says
+    # "you are going too fast", and only one of those is true.
+    limit_req_status 429;
+{% endif %}
+{% if nginx_limit_conn_enabled %}
+
+    # Concurrent connections per address — blunts a slow-loris attempt, where
+    # one client opens many connections and sends headers a byte at a time.
+    limit_conn_zone $binary_remote_addr zone=jengasec_conn:{{ nginx_rate_limit_zone_size }};
+    limit_conn_status 429;
+{% endif %}
+{% if nginx_gzip_enabled %}
+
+    # ── Compression ─────────────────────────────────────────────────────────
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+
+    # 5 is the point of diminishing returns — 9 costs noticeably more CPU for a
+    # few percent of size.
+    gzip_comp_level {{ nginx_gzip_comp_level }};
+    gzip_min_length {{ nginx_gzip_min_length }};
+    gzip_types {{ nginx_gzip_types | join(' ') }};
+
+    # Images and archives are already compressed; gzipping them wastes CPU and
+    # occasionally makes them larger.
+    gzip_disable "msie6";
+{% endif %}
+
+    # ── Proxy cache path ────────────────────────────────────────────────────
+    # Declared but not used by any location. Django responses are per-user and
+    # must not be cached by a shared proxy — caching a judge's dashboard and
+    # serving it to a competitor is exactly the failure this event cannot have.
+    proxy_temp_path /var/cache/nginx/tmp;
+
+    # ── Sites ───────────────────────────────────────────────────────────────
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}

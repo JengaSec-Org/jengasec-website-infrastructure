@@ -1,0 +1,51 @@
+# {{ common_managed_banner }}
+#
+# Security response headers.
+# /etc/nginx/snippets/jengasec-security-headers.conf
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  add_header DOES NOT INHERIT into a location that has its own add_header.  │
+# │                                                                           │
+# │  Set these at server level and they apply — until some location adds one   │
+# │  header of its own, at which point that location silently loses ALL of     │
+# │  them. That is why this is a snippet, and why every location block that    │
+# │  adds a header of its own includes this file again.                        │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# `always` sends the header on error responses too. Without it a 500 or a 404 is
+# served with no security headers at all.
+
+{% for header, value in nginx_security_headers.items() %}
+add_header {{ header }} "{{ value }}" always;
+{% endfor %}
+{% if nginx_hsts_enabled %}
+
+# ── HSTS ────────────────────────────────────────────────────────────────────
+# Tells browsers to refuse plain HTTP to this host for {{ (nginx_hsts_max_age / 86400) | int }} days.
+#
+# There is no server-side undo. Once a browser has seen this header it will not
+# fall back to HTTP even if you remove the header, so a broken certificate locks
+# that user out of the site until the max-age expires.
+add_header Strict-Transport-Security "max-age={{ nginx_hsts_max_age }}{% if nginx_hsts_include_subdomains %}; includeSubDomains{% endif %}{% if nginx_hsts_preload %}; preload{% endif %}" always;
+{% else %}
+
+# HSTS is OFF. Turn it on only after confirming HTTPS works from a real browser,
+# because there is no server-side way to undo it — see nginx_hsts_enabled.
+{% endif %}
+{% if nginx_csp_enabled %}
+
+# ── Content Security Policy ─────────────────────────────────────────────────
+{% if nginx_csp_report_only %}
+# REPORT-ONLY. Violations appear in the browser console but nothing is blocked.
+# A CSP that breaks the application is worse than no CSP, so watch the console
+# on every page — especially the Chart.js dashboards — before enforcing.
+#
+# 'unsafe-inline' is present because the platform's templates carry inline
+# scripts and styles. Removing it is the real work of enforcing a CSP, and it
+# belongs in the platform repository, not here.
+add_header Content-Security-Policy-Report-Only "{{ nginx_csp_policy | trim | replace('\n', ' ') }}" always;
+{% else %}
+# ENFORCING. Anything violating this policy is blocked by the browser.
+add_header Content-Security-Policy "{{ nginx_csp_policy | trim | replace('\n', ' ') }}" always;
+{% endif %}
+{% endif %}

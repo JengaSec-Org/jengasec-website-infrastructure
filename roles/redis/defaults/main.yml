@@ -1,21 +1,93 @@
 ---
 # Defaults for the `redis` role — Phase 4.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# Cache, session store, and future Celery broker.
+#
+# Redis is treated here as a CACHE, not a database: no persistence, a hard
+# memory cap, and an eviction policy. Losing its contents costs a round of
+# re-computation, not data. That framing is what justifies every setting below.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-redis_enabled: false
+redis_packages:
+  - redis-server
+  - redis-tools
 
-# widen only for a remote application host
+redis_service_name: redis-server
+redis_config_file: /etc/redis/redis.conf
+redis_data_dir: /var/lib/redis
+redis_log_dir: /var/log/redis
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# localhost by default. group_vars/database widens it to the private address so
+# the web host can reach it.
+#
+# Redis has no meaningful access control beyond requirepass, and historically
+# an exposed Redis is one of the fastest routes to remote code execution
+# (CONFIG SET dir + SAVE writes a file anywhere the redis user can write).
+# Never bind it to 0.0.0.0.
 redis_bind: "127.0.0.1"
 redis_port: 6379
-# hard cap; Redis must not starve PostgreSQL
-redis_maxmemory: "256mb"
-# cache semantics, evict coldest keys
-redis_maxmemory_policy: allkeys-lru
-# a cache does not need durability
-redis_appendonly: false
-redis_databases: 16
+
+# Protected mode refuses connections from non-loopback addresses when no
+# password is set — a backstop for the exact mistake above. Left on; the role
+# asserts a password exists before widening the bind address.
+redis_protected_mode: true
+
+# ── Authentication ──────────────────────────────────────────────────────────
 redis_requirepass: "{{ vault_redis_password }}"
+
+# Commands renamed to something unguessable rather than removed. FLUSHALL wipes
+# every session mid-competition; CONFIG SET is the RCE primitive above; KEYS
+# scans the entire keyspace and blocks the server while it does.
+redis_rename_dangerous_commands: true
+redis_renamed_commands:
+  - FLUSHALL
+  - FLUSHDB
+  - CONFIG
+  - KEYS
+  - SHUTDOWN
+
+# ── Memory ──────────────────────────────────────────────────────────────────
+# A hard cap, so Redis can never starve PostgreSQL on the shared 4 GB host.
+# Without it Redis grows until the OOM killer picks a victim — and the OOM
+# killer usually picks PostgreSQL, because it is bigger.
+redis_maxmemory: "256mb"
+
+# allkeys-lru: when full, evict the least recently used key regardless of TTL.
+# Correct for a cache. 'noeviction' would instead start returning errors on
+# write, which for a session store means users randomly cannot log in.
+redis_maxmemory_policy: allkeys-lru
+redis_maxmemory_samples: 5
+
+# ── Persistence ─────────────────────────────────────────────────────────────
+# Off. A cache does not need durability, and both mechanisms cost something:
+# RDB forks the process (doubling memory briefly), AOF writes continuously.
+#
+# Turn RDB on only if you later move Celery task state in here, where losing
+# the queue on restart would actually matter.
+redis_save_enabled: false
+redis_appendonly: false
+redis_rdb_compression: true
+
+# ── Databases ───────────────────────────────────────────────────────────────
+# Numbered 0-15. The platform can use separate numbers for cache and sessions
+# so that clearing one does not clear the other.
+redis_databases: 16
+
+# ── Limits ──────────────────────────────────────────────────────────────────
+redis_maxclients: 128
+redis_timeout: 300              # close idle client connections after 5 min
+redis_tcp_keepalive: 300
+
+# ── Slow queries ────────────────────────────────────────────────────────────
+# Redis is single-threaded: one slow command blocks every other client. The
+# slowlog is how you find the KEYS call someone left in.
+redis_slowlog_log_slower_than: 10000    # microseconds
+redis_slowlog_max_len: 128
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+redis_loglevel: notice
+
+# ── systemd hardening ───────────────────────────────────────────────────────
+# Applied as a drop-in over Debian's unit rather than by replacing it, so
+# package upgrades keep working.
+redis_systemd_hardening: true

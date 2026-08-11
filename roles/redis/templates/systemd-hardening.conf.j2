@@ -1,0 +1,56 @@
+# {{ common_managed_banner }}
+#
+# systemd sandboxing for Redis.
+#
+# A drop-in over Debian's unit rather than a replacement, so package upgrades
+# keep applying. Most of what people reach for a container to get — filesystem
+# isolation, restricted syscalls, no new privileges — systemd provides here.
+
+[Service]
+# ── Privileges ──────────────────────────────────────────────────────────────
+# setuid binaries cannot elevate from inside this unit.
+NoNewPrivileges=yes
+
+# ── Filesystem ──────────────────────────────────────────────────────────────
+# Everything read-only except the paths named below. This is the setting that
+# blunts the CONFIG SET dir + SAVE write-anywhere primitive: even with the
+# command available, there is nowhere useful to write.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={{ redis_data_dir }} {{ redis_log_dir }} /run/redis
+PrivateTmp=yes
+
+# ── Kernel ──────────────────────────────────────────────────────────────────
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+
+# ── Capabilities ────────────────────────────────────────────────────────────
+# Redis needs none of them once it has bound its port.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ── Syscalls ────────────────────────────────────────────────────────────────
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallArchitectures=native
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# IPv4 and Unix sockets only — no raw sockets, no exotic address families.
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# ── Resources ───────────────────────────────────────────────────────────────
+# A second ceiling under maxmemory in redis.conf. If Redis ever exceeds this,
+# systemd kills it rather than letting the OOM killer choose — and the OOM
+# killer would probably choose PostgreSQL.
+MemoryMax={{ (redis_maxmemory | regex_replace('[^0-9]', '') | int * 2) }}M
+TasksMax=64

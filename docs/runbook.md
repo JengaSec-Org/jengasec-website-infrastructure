@@ -5,7 +5,23 @@ breaks.
 
 ---
 
-## 0. Get the repository onto the Debian machine
+## 0. Check the repository before you move it
+
+Do this on whichever machine you author on — it needs no Ansible, only
+`pyyaml` and `jinja2`:
+
+```bash
+pip install pyyaml jinja2
+python tests/structure-check.py
+```
+
+It parses every YAML file and Jinja2 template, and confirms every variable,
+template, role, and handler reference resolves. Catching a missing template here
+costs a minute; catching it halfway through a run on real hardware does not.
+
+---
+
+## 1. Get the repository onto the Debian machine
 
 Ansible has no supported Windows control node. The repository is authored on
 Windows and **run** from the Debian box.
@@ -13,8 +29,8 @@ Windows and **run** from the Debian box.
 Via git (preferred — `.gitattributes` handles line endings):
 
 ```bash
-git clone <your-repo-url> jengasec-infrastructure
-cd jengasec-infrastructure
+git clone <your-repo-url> jengasec-website-infrastructure
+cd jengasec-website-infrastructure
 ```
 
 If you copied the folder directly instead — over SMB, a USB stick, or WinSCP —
@@ -37,7 +53,7 @@ ansible-galaxy collection install -r requirements.yml
 
 ---
 
-## 1. Fill in the inventory
+## 2. Fill in the inventory
 
 Find everything that still needs a real value:
 
@@ -63,7 +79,7 @@ ip -brief link show
 
 ---
 
-## 2. Secrets and keys
+## 3. Secrets and keys
 
 ```bash
 cp inventories/production/vault.yml.example inventories/production/vault.yml
@@ -85,7 +101,7 @@ one, because the `ssh` role that follows disables password authentication.
 
 ---
 
-## 3. Preflight
+## 4. Preflight
 
 ```bash
 ./scripts/preflight.sh
@@ -98,7 +114,7 @@ Fix everything preflight reports as an error before continuing.
 
 ---
 
-## 4. Dry run
+## 5. Dry run
 
 ```bash
 ansible-playbook -i inventories/development playbooks/bootstrap.yml \
@@ -112,7 +128,7 @@ otherwise appear halfway through a real run.
 
 ---
 
-## 5. Phase 1 — base OS
+## 6. Phase 1 — base OS
 
 Start with **server2 or server3**, not server1. Make your mistakes on the host
 you need least.
@@ -141,7 +157,7 @@ Repeat for server2, then server1.
 
 ---
 
-## 6. Phase 3 — security
+## 7. Phase 3 — security
 
 ```bash
 make security LIMIT=server3
@@ -157,7 +173,7 @@ sudo auditctl -l | wc -l          # must not be 0
 
 ---
 
-## 7. Phase 2 — networking
+## 8. Phase 2 — networking
 
 > **Have console access open** — physical, iDRAC/iLO, or the hypervisor console.
 > This phase can end your SSH session.
@@ -199,7 +215,7 @@ dig @10.0.0.12 jengasec.local AXFR       # MUST be refused
 
 ---
 
-## 8. Before the competition
+## 9. Before the competition
 
 ```yaml
 # group_vars/all/main.yml

@@ -2,6 +2,9 @@
 
 All 30 roles and their implementation status.
 
+For what these roles actually do to a server, and what you must configure before
+running them, see [pre-deployment.md](pre-deployment.md).
+
 **16 implemented** (Phases 1–3) · **14 stubs** (Phases 4–10)
 
 ---

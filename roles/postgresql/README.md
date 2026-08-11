@@ -1,63 +1,124 @@
 # `postgresql`
 
-**Phase 5 · NOT YET IMPLEMENTED**
+**Phase 5 · Implemented**
 
-PostgreSQL server, databases, roles, and connection policy.
+PostgreSQL 15 — server, tuning, authentication, databases and roles.
 
-## Status
+This holds every submission, score, and judge override. Two things follow: it
+must not be reachable from the LAN, and this role must never casually restart
+it.
 
-This role is a stub. Running it raises a failure rather than silently doing
-nothing — see `tasks/main.yml` for why.
+## Tuning is a fraction of RAM, not a number
 
-## Planned responsibilities
+Every memory setting is a proportion of the host's memory. If PostgreSQL moves
+to a different machine, **recalculate** rather than copying these across.
 
-- Install PostgreSQL and the contrib packages
-- Tune postgresql.conf for the available RAM
-- Render pg_hba.conf from postgresql_hba_entries
-- Create databases and roles from group_vars
-- Install extensions
-- Configure WAL archiving for point-in-time recovery
-- Streaming replication (Phase 6)
+| Setting | Value (4 GB host) | Fraction | Note |
+|---|---|---|---|
+| `shared_buffers` | 1 GB | ~25% | Higher rarely helps — PostgreSQL leans on the OS page cache, and a bigger value caches the same pages twice |
+| `effective_cache_size` | 3 GB | ~75% | **Allocates nothing.** Only tells the planner how much cache to assume |
+| `work_mem` | 8 MB | — | **Per sort, not per connection.** Three sorts × 100 connections = 300× this |
+| `maintenance_work_mem` | 128 MB | — | VACUUM and CREATE INDEX; few run at once |
+
+`max_connections` is 100. Raising it is almost never the fix for "too many
+connections" — pooling is. On a 4 GB box, each connection is a process with its
+own memory, so a bigger number trades stability for a bigger error message.
+
+## pg_hba.conf ordering
+
+PostgreSQL uses the **first** line that matches, then stops. It does not keep
+looking for a better match and it does not warn you — so a broad rule above a
+narrow one silently disables the narrow one.
+
+The template emits most-specific-first for exactly that reason, and there is no
+catch-all at the bottom. A host that has not been added explicitly gets:
+
+```
+FATAL: no pg_hba.conf entry for host "10.0.0.x", user "...", database "..."
+```
+
+That message is unambiguous, which is why no friendlier catch-all exists.
+
+## Reload vs restart
+
+Two handlers, because the difference matters on a live database.
+
+**Reload** — everything in `pg_hba.conf` and most of `postgresql.conf`. Open
+connections untouched.
+
+**Restart** — only for settings read at startup: `shared_preload_libraries`,
+`shared_buffers`, `max_connections`. This **drops every connection**.
+
+`shared_preload_libraries` is the trap. A reload silently does not apply it, and
+`CREATE EXTENSION pg_stat_statements` then fails with an error that never
+mentions restarting. The role compares the live value against the desired one
+and queues a restart only when they genuinely differ.
+
+## The schema grant
+
+Since PostgreSQL 15 the `public` schema is no longer writable by every role by
+default. Without an explicit `CREATE, USAGE` grant, `manage.py migrate` fails on
+a fresh database with a permission error that reads like a connection problem.
+
+The role grants it to each database owner. Worth knowing, because it is a
+recent change and most tutorials predate it.
+
+## Safety
+
+**It refuses to listen on `0.0.0.0`.** On a competition network that would
+expose the scoring database to every participant. The assert runs before
+anything is installed, and the role reads back the live listening address at the
+end in case someone hand-edited since the last run.
+
+`scram-sha-256`, never `md5` — PostgreSQL's md5 is effectively unsalted and
+falls to offline cracking quickly.
 
 ## Variables
 
-Defined in `defaults/main.yml`; override in `group_vars/`, never by editing the
-role.
+Full list in [`defaults/main.yml`](defaults/main.yml); production values in
+`group_vars/database/main.yml`.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `postgresql_enabled` | `false` | Guard. Set true only once the tasks exist. |
-| `postgresql_version` | `15` | the version Debian 12 ships |
-| `postgresql_listen_addresses` | `"localhost"` | widen only for a remote app host |
-| `postgresql_port` | `5432` | — |
-| `postgresql_max_connections` | `100` | — |
-| `postgresql_shared_buffers` | `"256MB"` | roughly 25% of RAM |
-| `postgresql_effective_cache_size` | `"768MB"` | roughly 50-75% of RAM |
-| `postgresql_work_mem` | `"4MB"` | per sort operation, multiplied by connections |
-| `postgresql_password_encryption` | `scram-sha-256` | never md5 |
-| `postgresql_databases` | `[]` | — |
-| `postgresql_users` | `[]` | — |
-| `postgresql_hba_entries` | `[]` | — |
-| `postgresql_extensions` | `["pg_stat_statements"]` | — |
+| `postgresql_version` | `15` | What Debian 12 ships |
+| `postgresql_listen_addresses` | `localhost` | Widened to the private address in `group_vars` |
+| `postgresql_max_connections` | `100` | |
+| `postgresql_shared_buffers` | `256MB` | `1GB` in production |
+| `postgresql_databases` / `_users` | `[]` | Lists of dicts |
+| `postgresql_hba_entries` | `[]` | **Order matters** |
+| `postgresql_extensions` | `[pg_stat_statements]` | Needs the restart above |
+| `postgresql_archive_mode` | `false` | Do not enable until `backup` drains the archive |
+| `postgresql_replication_enabled` | `false` | Phase 6 |
 
-## Example play
+## Do not enable WAL archiving yet
 
-```yaml
-- name: Configure postgresql
-  hosts: infra
-  become: true
-  roles:
-    - role: postgresql
-      tags: [postgresql]
+`postgresql_archive_mode` is off, and should stay off until the `backup` role
+exists. PostgreSQL retains every WAL segment it could not archive — point it at
+a directory nothing drains and the disk fills, at which point the database stops
+accepting writes.
+
+## Tags
+
+`postgresql`, `packages`, `service`, `config`, `roles`, `databases`,
+`extensions`, `verify`
+
+## Verifying
+
+```bash
+sudo -u postgres psql -c "SELECT version();"
+sudo -u postgres psql -c "SELECT name, setting, source FROM pg_settings
+                          WHERE name IN ('shared_buffers','work_mem','max_connections');"
+sudo -u postgres psql -c "SELECT * FROM pg_hba_file_rules;"
+sudo ss -tlnp | grep 5432
 ```
 
-## Implementing this role
+The last one must show the private address or localhost — **never `0.0.0.0`**.
 
-1. Fill in `defaults/main.yml` — every value the role needs, none of them literal in tasks.
-2. Write the templates in `templates/` as `.j2`, each starting with the managed banner.
-3. Write `tasks/main.yml`, referencing only variables.
-4. Add handlers for anything that needs a restart or reload.
-5. Delete the `fail` task and flip `postgresql_enabled` to `true`.
-6. Update the status table in [docs/roles.md](../../docs/roles.md).
-7. `make lint && make syntax`, then run twice against staging — the second run
-   must report zero changes.
+From the web host, prove the application can actually connect:
+
+```bash
+psql "host=10.0.0.12 dbname=jengasec user=jengasec sslmode=prefer" -c "SELECT 1;"
+```
+
+From any other host, the same command must fail. If it succeeds, the firewall
+rule in `group_vars/database/main.yml` is not doing its job.

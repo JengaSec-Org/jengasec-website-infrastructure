@@ -1,13 +1,16 @@
 ---
 # Handlers for the `django` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
-- name: Restart django
+# SIGHUP via systemd — gunicorn re-execs its workers while holding the socket
+# open, so nothing in flight is dropped and no request is refused. A code or
+# environment change should never need a full restart.
+#
+# The handler lives here as well as in the gunicorn role because Ansible
+# resolves `notify` within the roles included in the play, and platform.yml
+# always includes both.
+- name: Reload gunicorn
   ansible.builtin.systemd:
-    name: "{{ django_service_name | default('django') }}"
-    state: restarted
-    daemon_reload: true
-  listen: "restart django"
-  when: django_enabled | bool
+    name: "{{ gunicorn_service_name | default('gunicorn') }}"
+    state: reloaded
+  listen: "reload gunicorn"
+  failed_when: false      # not yet installed on the very first run

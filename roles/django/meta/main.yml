@@ -14,5 +14,12 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - django
+    - deployment
 
+# `python` and `git` must have run, and PostgreSQL must be reachable. Both are
+# ordered in playbooks/platform.yml rather than declared here — a meta
+# dependency would re-run the python role every time this one is used, and the
+# database is on a different host entirely, which meta dependencies cannot
+# express. The role checks for both at run time instead.
 dependencies: []

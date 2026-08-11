@@ -1,13 +1,34 @@
 ---
 # Handlers for the `gunicorn` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
+- name: Reload systemd for gunicorn
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "reload systemd for gunicorn"
+
+# Restarting the SOCKET drops the listening file descriptor, so it is only done
+# when the socket unit itself changed. Restarting it needlessly turns a
+# graceful reload into a brief refusal of connections.
+- name: Restart gunicorn socket
+  ansible.builtin.systemd:
+    name: "{{ gunicorn_socket_name }}"
+    state: restarted
+  listen: "restart gunicorn socket"
+
+# A full restart, used when the unit file changed. Requests arriving during it
+# are queued by the kernel on the socket rather than refused, so this is a
+# pause rather than an outage.
 - name: Restart gunicorn
   ansible.builtin.systemd:
-    name: "{{ gunicorn_service_name | default('gunicorn') }}"
+    name: "{{ gunicorn_service_name }}"
     state: restarted
-    daemon_reload: true
   listen: "restart gunicorn"
-  when: gunicorn_enabled | bool
+
+# SIGHUP — gunicorn re-execs its workers while holding the socket open. Nothing
+# in flight is dropped. This is what a code deployment should use, and what the
+# `deployment` and `django` roles notify.
+- name: Reload gunicorn
+  ansible.builtin.systemd:
+    name: "{{ gunicorn_service_name }}"
+    state: reloaded
+  listen: "reload gunicorn"

@@ -1,57 +1,96 @@
 # `redis`
 
-**Phase 4 · NOT YET IMPLEMENTED**
+**Phase 4 · Implemented**
 
-In-memory cache, session store, and future Celery broker.
+Cache, session store, and future Celery broker.
 
-## Status
+## Treated as a cache, not a database
 
-This role is a stub. Running it raises a failure rather than silently doing
-nothing — see `tasks/main.yml` for why.
+No persistence, a hard memory cap, an eviction policy. Losing the contents costs
+a round of re-computation, not data. That framing justifies most of the
+configuration:
 
-## Planned responsibilities
+| Setting | Value | Why |
+|---|---|---|
+| `save ""` | persistence off | RDB snapshots **fork the process**, briefly doubling memory — a real risk on a 4 GB host shared with PostgreSQL |
+| `maxmemory` | 256 MB | Without a cap Redis grows until the OOM killer intervenes — and it usually picks PostgreSQL, because PostgreSQL is bigger |
+| `maxmemory-policy` | `allkeys-lru` | `noeviction` returns errors on write instead, which for a session store means users randomly cannot log in |
+| `stop-writes-on-bgsave-error` | `no` | The default halts writes on save failure. Correct for a database, wrong for a cache — it would take the site down over data we can regenerate |
 
-- Install and configure redis-server
-- Bind to the private interface only, never 0.0.0.0
-- requirepass authentication from the vault
-- maxmemory cap and eviction policy
-- Persistence policy (RDB vs AOF)
-- systemd hardening of the unit
+If Celery task state moves in here, revisit all four: losing a queue
+mid-competition is a different kind of problem from losing a cache.
+
+## Why the guards are strict
+
+An exposed Redis without a password is not a data leak — it is **remote code
+execution**. `CONFIG SET dir`, `CONFIG SET dbfilename`, `SAVE`, and you have
+written a file anywhere the redis user can write, `authorized_keys` included.
+
+Three overlapping defences:
+
+1. **The role refuses** to bind to a non-loopback address unless
+   `redis_requirepass` is at least 16 characters, and refuses `0.0.0.0`
+   outright.
+2. **Dangerous commands are renamed** to an unguessable suffix derived from the
+   password — `CONFIG`, `FLUSHALL`, `FLUSHDB`, `KEYS`, `SHUTDOWN`. Renamed
+   rather than removed, so a deliberate invocation is still possible for whoever
+   holds the config file.
+3. **`ProtectSystem=strict`** in the systemd drop-in makes the filesystem
+   read-only apart from Redis's own directories. Even with `CONFIG` available,
+   there is nowhere useful to write.
+
+`KEYS` is on the list for a different reason: Redis is single-threaded, so a
+`KEYS *` on a large keyspace blocks every other client until it finishes.
+
+## systemd hardening
+
+Applied as a **drop-in**, not a replacement unit, so package upgrades keep
+working. `NoNewPrivileges`, `ProtectSystem=strict`, an empty
+`CapabilityBoundingSet`, a syscall filter, `MemoryDenyWriteExecute`, and a
+`MemoryMax` at twice `maxmemory` as a second ceiling.
+
+Most of what people reach for a container to get, without the container — see
+[decisions.md](../../docs/decisions.md).
 
 ## Variables
 
-Defined in `defaults/main.yml`; override in `group_vars/`, never by editing the
-role.
-
 | Variable | Default | Notes |
 |---|---|---|
-| `redis_enabled` | `false` | Guard. Set true only once the tasks exist. |
-| `redis_bind` | `"127.0.0.1"` | widen only for a remote application host |
-| `redis_port` | `6379` | — |
-| `redis_maxmemory` | `"256mb"` | hard cap; Redis must not starve PostgreSQL |
-| `redis_maxmemory_policy` | `allkeys-lru` | cache semantics, evict coldest keys |
-| `redis_appendonly` | `false` | a cache does not need durability |
-| `redis_databases` | `16` | — |
-| `redis_requirepass` | `"{{ vault_redis_password }}"` | — |
+| `redis_bind` | `127.0.0.1` | Widened to the private address in `group_vars/database` |
+| `redis_port` | `6379` | |
+| `redis_requirepass` | `{{ vault_redis_password }}` | **Required** to bind non-locally |
+| `redis_maxmemory` | `256mb` | |
+| `redis_maxmemory_policy` | `allkeys-lru` | |
+| `redis_save_enabled` | `false` | |
+| `redis_appendonly` | `false` | |
+| `redis_rename_dangerous_commands` | `true` | |
+| `redis_systemd_hardening` | `true` | |
 
-## Example play
+## Tags
 
-```yaml
-- name: Configure redis
-  hosts: web
-  become: true
-  roles:
-    - role: redis
-      tags: [redis]
+`redis`, `packages`, `config`, `hardening`, `service`, `verify`
+
+## Verifying
+
+```bash
+export REDISCLI_AUTH='<the vault password>'
+redis-cli -h 10.0.0.12 ping
+redis-cli -h 10.0.0.12 config get maxmemory
+redis-cli -h 10.0.0.12 info memory
+redis-cli -h 10.0.0.12 slowlog get 10
 ```
 
-## Implementing this role
+Use `REDISCLI_AUTH`, not `-a` — the `-a` flag puts the password in the process
+list, where any local user can read it with `ps`.
 
-1. Fill in `defaults/main.yml` — every value the role needs, none of them literal in tasks.
-2. Write the templates in `templates/` as `.j2`, each starting with the managed banner.
-3. Write `tasks/main.yml`, referencing only variables.
-4. Add handlers for anything that needs a restart or reload.
-5. Delete the `fail` task and flip `redis_enabled` to `true`.
-6. Update the status table in [docs/roles.md](../../docs/roles.md).
-7. `make lint && make syntax`, then run twice against staging — the second run
-   must report zero changes.
+`config get maxmemory` returning **0 means unlimited**, which is the setting
+that lets Redis take PostgreSQL down with it. The role reports this at the end
+of every run for that reason.
+
+Confirm it is not reachable from anywhere it should not be:
+
+```bash
+# from server1 — should connect
+nc -zv 10.0.0.12 6379
+# from any other host — should time out
+```

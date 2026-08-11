@@ -1,0 +1,106 @@
+# {{ common_managed_banner }}
+#
+# Redis on {{ inventory_hostname }} — cache and session store.
+#
+# Treated as a CACHE, not a database: no persistence, a hard memory cap, and an
+# eviction policy. Losing its contents costs a round of re-computation, not
+# data. That framing justifies most of what follows.
+#
+# Inspect a live value:  redis-cli CONFIG GET maxmemory
+
+# ── Network ─────────────────────────────────────────────────────────────────
+bind {{ redis_bind }}
+port {{ redis_port }}
+protected-mode {{ 'yes' if redis_protected_mode else 'no' }}
+tcp-backlog 511
+timeout {{ redis_timeout }}
+tcp-keepalive {{ redis_tcp_keepalive }}
+
+# ── Authentication ──────────────────────────────────────────────────────────
+# Plaintext here by necessity — Redis reads it as the daemon user. The file is
+# 0640 root:redis for that reason.
+requirepass {{ redis_requirepass }}
+{% if redis_rename_dangerous_commands %}
+
+# ── Dangerous commands ──────────────────────────────────────────────────────
+# Renamed rather than disabled, so an accidental invocation fails while a
+# deliberate one is still possible for whoever holds this file.
+#
+#   FLUSHALL / FLUSHDB  wipe every session mid-competition
+#   CONFIG              CONFIG SET dir + SAVE writes a file anywhere the redis
+#                       user can write — the classic Redis RCE primitive
+#   KEYS                scans the whole keyspace and BLOCKS the server; Redis is
+#                       single-threaded, so this stalls every other client
+#   SHUTDOWN            stops the server
+{% for command in redis_renamed_commands %}
+rename-command {{ command }} {{ command }}_{{ (redis_requirepass ~ command) | hash('sha1') | truncate(12, true, '') }}
+{% endfor %}
+{% endif %}
+
+# ── Memory ──────────────────────────────────────────────────────────────────
+# A hard cap. Without one, Redis grows until the OOM killer intervenes — and it
+# usually picks PostgreSQL, because PostgreSQL is bigger.
+maxmemory {{ redis_maxmemory }}
+
+# allkeys-lru: when full, evict the least recently used key. Correct for a
+# cache. 'noeviction' would instead return errors on write, which for a session
+# store presents as users randomly being unable to log in.
+maxmemory-policy {{ redis_maxmemory_policy }}
+maxmemory-samples {{ redis_maxmemory_samples }}
+
+# ── Persistence ─────────────────────────────────────────────────────────────
+{% if redis_save_enabled %}
+save 900 1
+save 300 10
+save 60 10000
+rdbcompression {{ 'yes' if redis_rdb_compression else 'no' }}
+dbfilename dump.rdb
+{% else %}
+# Disabled. RDB snapshots fork the process, briefly doubling memory — which on a
+# 4 GB host shared with PostgreSQL is a real risk for data we can regenerate.
+#
+# Turn this on if Celery task state moves in here, where losing the queue on
+# restart would actually matter.
+save ""
+{% endif %}
+appendonly {{ 'yes' if redis_appendonly else 'no' }}
+dir {{ redis_data_dir }}
+
+# Keep serving reads if a background save fails. The default halts writes on
+# save error — correct for a database, wrong for a cache, where it would take
+# the site down over data we do not need.
+stop-writes-on-bgsave-error no
+
+# ── Databases ───────────────────────────────────────────────────────────────
+databases {{ redis_databases }}
+
+# ── Clients ─────────────────────────────────────────────────────────────────
+maxclients {{ redis_maxclients }}
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+loglevel {{ redis_loglevel }}
+logfile {{ redis_log_dir }}/redis-server.log
+syslog-enabled yes
+syslog-ident redis
+
+# ── Slow log ────────────────────────────────────────────────────────────────
+# Redis is single-threaded, so one slow command blocks every other client. This
+# is how you find the KEYS call someone left in a view.
+slowlog-log-slower-than {{ redis_slowlog_log_slower_than }}
+slowlog-max-len {{ redis_slowlog_max_len }}
+
+# ── Daemon ──────────────────────────────────────────────────────────────────
+# 'no' is correct under systemd — systemd supervises the process itself, and a
+# daemonising service confuses it about whether the unit is running.
+daemonize no
+supervised systemd
+pidfile /run/redis/redis-server.pid
+
+# ── Latency ─────────────────────────────────────────────────────────────────
+latency-monitor-threshold 100
+
+# ── Append-only tuning (inert while appendonly is off) ──────────────────────
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb

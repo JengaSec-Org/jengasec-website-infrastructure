@@ -1,0 +1,86 @@
+---
+# staging1 — a single VM standing in for all three production servers.
+#
+# It belongs to the web, database, dns, and monitored groups at once, so one
+# machine exercises every group_vars file. That is the point of staging: rehearse
+# the playbooks, not the topology.
+#
+# What staging genuinely proves:
+#   - the playbooks run start to finish without erroring
+#   - the roles are idempotent (second run reports zero changes)
+#   - templates render with real values rather than the development dummies
+#
+# What it cannot prove:
+#   - cross-host behaviour — the database firewall rule allowing only the web
+#     host is meaningless when they are the same machine
+#   - the certificate CA distribution path, for the same reason
+
+# ── Identity ────────────────────────────────────────────────────────────────
+inventory_hostname_short: staging1
+common_hostname: "staging1.{{ jengasec_domain }}"
+host_role_description: "Staging — all roles on one host"
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# Confirm the interface name on the VM before enabling networking_configure:
+#     ip -brief link show
+# A VM under VMware or VirtualBox typically presents ens33, ens18, or enp0s3.
+networking_interface: eth0               # TODO: replace
+networking_address: 10.0.1.11            # TODO: replace
+networking_netmask: 255.255.255.0        # TODO: replace
+networking_gateway: "{{ jengasec_network_gateway }}"
+networking_dns_servers:
+  - 127.0.0.1                            # it runs its own Bind9
+  - 1.1.1.1
+networking_dns_search: "{{ jengasec_domain }}"
+
+# Left off, as in production. Turn it on here FIRST — rehearsing the one role
+# that can cut you off is exactly what a staging VM is for, and a hypervisor
+# console makes recovery trivial.
+networking_configure: false
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+os_swap_enabled: true
+os_swap_size_mb: 1024
+
+# ── Certificates ────────────────────────────────────────────────────────────
+certificates_common_name: "staging1.{{ jengasec_domain }}"
+certificates_subject_alt_names:
+  - "DNS:staging1.{{ jengasec_domain }}"
+  - "DNS:platform.{{ jengasec_domain }}"
+  - "IP:10.0.1.11"                       # TODO: replace
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+# Minimal zone — enough to prove Bind9 loads, resolves, and refuses transfers.
+dns_reverse_zone: "1.0.10.in-addr.arpa"  # TODO: replace to match your CIDR
+dns_reverse_prefix: "10.0.1"             # TODO: replace
+dns_zone_admin_email: "admin.{{ jengasec_domain }}"
+
+dns_records:
+  - { name: "@",        type: A,     value: "10.0.1.11" }   # TODO: replace
+  - { name: "ns1",      type: A,     value: "10.0.1.11" }   # TODO: replace
+  - { name: "staging1", type: A,     value: "10.0.1.11" }   # TODO: replace
+  - { name: "platform", type: CNAME, value: "staging1" }
+
+dns_reverse_records:
+  - { octet: "11", name: "staging1.{{ jengasec_domain }}." }   # TODO: replace
+
+# ── Database ────────────────────────────────────────────────────────────────
+# Overrides group_vars/database, which points the rule at server1 — a host that
+# does not exist in this inventory. Here everything is local.
+firewall_rules_group:
+  - port: 80
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "HTTP — staging"
+  - port: 443
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "HTTPS — staging"
+  - port: 53
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (TCP)"
+  - port: 53
+    proto: udp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (UDP)"

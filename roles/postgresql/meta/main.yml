@@ -3,7 +3,7 @@ galaxy_info:
   role_name: postgresql
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: PostgreSQL server, databases, roles, and connection policy.
+  description: PostgreSQL server, tuning, authentication, databases and roles.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,7 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - postgresql
+    - database
 
 dependencies: []

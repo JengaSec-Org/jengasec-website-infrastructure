@@ -1,23 +1,97 @@
 ---
 # Defaults for the `gunicorn` role — Phase 4.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# The WSGI server running Django under systemd.
+#
+# gunicorn is installed INTO the application virtualenv by the `django` role
+# (it is already in the platform's requirements.txt). This role owns the systemd
+# units, the socket, and the tuning — not the package.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-gunicorn_enabled: false
+gunicorn_service_name: gunicorn
+gunicorn_socket_name: gunicorn.socket
 
-# the (2 x cores) + 1 convention
-gunicorn_workers: "{{ (ansible_processor_vcpus | int * 2) + 1 }}"
-# async only helps if the workload becomes IO-bound
+# ── Socket ──────────────────────────────────────────────────────────────────
+# A Unix socket, not a TCP port. Nothing off-box should reach gunicorn directly:
+# it speaks WSGI to nginx and nothing else, and a socket cannot be reached
+# across the network at all — which is one fewer thing to firewall.
+gunicorn_bind: "unix:/run/gunicorn/gunicorn.sock"
+gunicorn_socket_path: /run/gunicorn/gunicorn.sock
+gunicorn_runtime_dir: gunicorn          # systemd creates /run/gunicorn
+
+# The socket is owned by the app user but must be GROUP-writable by nginx's
+# user, or every request returns 502 with "permission denied" in the nginx
+# error log and nothing at all in gunicorn's.
+gunicorn_socket_user: "{{ app_user | default('jengasec') }}"
+gunicorn_socket_group: www-data
+gunicorn_socket_mode: "0660"
+
+# ── Workers ─────────────────────────────────────────────────────────────────
+# The (2 x cores) + 1 convention, capped at 9. Each worker is a full Python
+# process holding its own copy of Django — on an 8 GB box, more workers is not
+# automatically better.
+gunicorn_workers: "{{ [(ansible_processor_vcpus | default(2) | int * 2) + 1, 9] | min }}"
+
+# sync: one request per worker at a time. Correct while the workload is
+# CPU-bound and database-bound.
+#
+# gevent would only help if requests spend most of their time waiting on IO. The
+# Ollama calls do exactly that, so if AI evaluation moves into the request path
+# rather than a background task, revisit this — but the better answer is to move
+# it out of the request path.
 gunicorn_worker_class: sync
-# Ollama evaluation calls are slow
+gunicorn_worker_connections: 1000
+
+# ── Timeouts ────────────────────────────────────────────────────────────────
+# A worker silent for this long is killed and replaced. 120s is generous because
+# document parsing (PyMuPDF, pdfplumber) and Ollama calls are genuinely slow.
+#
+# It must stay BELOW nginx's proxy_read_timeout, or nginx gives up first and the
+# user sees a 504 while the worker is still doing useful work.
 gunicorn_timeout: 120
 gunicorn_graceful_timeout: 30
-# recycle workers to bound memory growth
+gunicorn_keepalive: 5
+
+# ── Worker recycling ────────────────────────────────────────────────────────
+# Restart each worker after this many requests. A blunt but effective guard
+# against slow memory growth in a long-running Python process.
 gunicorn_max_requests: 1000
-# stagger restarts so they never align
+
+# Without jitter every worker hits the limit at the same request count and they
+# all restart together, which is a brief outage rather than a rolling one.
 gunicorn_max_requests_jitter: 50
-gunicorn_bind: "unix:/run/gunicorn/gunicorn.sock"
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+# To the journal via stdout/stderr, so `journalctl -u gunicorn` is the one place
+# to look. The journal is already size-capped by the `os` role.
 gunicorn_log_level: info
+gunicorn_access_log: "-"
+gunicorn_error_log: "-"
+
+# nginx is the real access log and records the client address. Gunicorn's access
+# log would only ever show 127.0.0.1, so it is off by default — duplicate volume
+# for no information.
+gunicorn_enable_access_log: false
+gunicorn_access_log_format: '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" %(D)s'
+
+# ── Application ─────────────────────────────────────────────────────────────
+gunicorn_wsgi_module: "config.wsgi:application"
+gunicorn_chdir: "{{ app_source_dir | default('/opt/jengasec/app') }}"
+gunicorn_pythonpath: "{{ app_source_dir | default('/opt/jengasec/app') }}"
+gunicorn_executable: "{{ app_venv_dir | default('/opt/jengasec/venv') }}/bin/gunicorn"
+
+# ── Process ─────────────────────────────────────────────────────────────────
+gunicorn_user: "{{ app_user | default('jengasec') }}"
+gunicorn_group: "{{ app_group | default('jengasec') }}"
+
+# ── Restart policy ──────────────────────────────────────────────────────────
+gunicorn_restart: always
+gunicorn_restart_sec: 5
+
+# ── systemd hardening ───────────────────────────────────────────────────────
+gunicorn_systemd_hardening: true
+
+# Paths gunicorn must be able to write to when ProtectSystem=strict is on.
+# Media is here because the application receives uploads.
+gunicorn_read_write_paths:
+  - "{{ app_media_dir | default('/opt/jengasec/app/media') }}"
+  - "{{ app_log_dir | default('/var/log/jengasec') }}"

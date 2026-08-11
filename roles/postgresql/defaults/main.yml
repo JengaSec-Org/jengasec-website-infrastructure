@@ -1,28 +1,110 @@
 ---
 # Defaults for the `postgresql` role — Phase 5.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# Tuned for the 4 GB host. Every memory setting below is a fraction of RAM, and
+# the fractions matter more than the absolute numbers — if you move PostgreSQL
+# to a different machine, recalculate rather than copying these values across.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-postgresql_enabled: false
+postgresql_version: 15                 # the version Debian 12 ships
+postgresql_packages:
+  - "postgresql-{{ postgresql_version }}"
+  - "postgresql-client-{{ postgresql_version }}"
+  - "postgresql-contrib-{{ postgresql_version }}"
+  - python3-psycopg2                   # required by the community.postgresql modules
 
-# the version Debian 12 ships
-postgresql_version: 15
-# widen only for a remote app host
+postgresql_service_name: postgresql
+postgresql_data_dir: "/var/lib/postgresql/{{ postgresql_version }}/main"
+postgresql_config_dir: "/etc/postgresql/{{ postgresql_version }}/main"
+postgresql_log_dir: /var/log/postgresql
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# localhost by default. group_vars/database widens it to the private interface
+# so the web host can connect — never to 0.0.0.0, which on a competition
+# network means every participant can reach the scoring database.
 postgresql_listen_addresses: "localhost"
 postgresql_port: 5432
-postgresql_max_connections: 100
-# roughly 25% of RAM
+
+# ── Memory ──────────────────────────────────────────────────────────────────
+# shared_buffers ~25% of RAM. Going higher rarely helps: PostgreSQL relies on
+# the OS page cache for the rest, and double-caching wastes the memory twice.
 postgresql_shared_buffers: "256MB"
-# roughly 50-75% of RAM
+
+# What the planner ASSUMES is cached, counting the OS page cache. It allocates
+# nothing — it only makes index scans look cheaper. 50-75% of RAM.
 postgresql_effective_cache_size: "768MB"
-# per sort operation, multiplied by connections
+
+# Per SORT, not per connection. A query with three sorts across 100 connections
+# can use 300x this. Small on purpose.
 postgresql_work_mem: "4MB"
-# never md5
+
+# For VACUUM, CREATE INDEX, ALTER TABLE. Only a few run at once, so it can be
+# generous.
+postgresql_maintenance_work_mem: "64MB"
+
+# ── Connections ─────────────────────────────────────────────────────────────
+# Each connection is a process with its own memory. 100 is plenty for gunicorn
+# with 9 workers; raising it is almost never the right fix for "too many
+# connections" — connection pooling is.
+postgresql_max_connections: 100
+
+# ── Write-ahead log ─────────────────────────────────────────────────────────
+postgresql_wal_level: replica          # enough for replication and PITR later
+postgresql_max_wal_size: "1GB"
+postgresql_min_wal_size: "80MB"
+postgresql_checkpoint_completion_target: 0.9
+
+# WAL archiving for point-in-time recovery. Off until the backup role exists to
+# collect the segments — archiving to a directory nothing ever drains fills the
+# disk and then PostgreSQL stops accepting writes.
+postgresql_archive_mode: false
+postgresql_archive_command: "test ! -f /srv/wal/%f && cp %p /srv/wal/%f"
+
+# ── Storage behaviour ───────────────────────────────────────────────────────
+# 1.1 suits SSDs. Leave at 4.0 for spinning disks, where random reads really
+# are four times the cost of sequential ones.
+postgresql_random_page_cost: 1.1
+postgresql_effective_io_concurrency: 200
+
+# ── Authentication ──────────────────────────────────────────────────────────
+# scram-sha-256, never md5. md5 is trivially crackable offline and Debian 12
+# defaults to scram anyway.
 postgresql_password_encryption: scram-sha-256
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+postgresql_log_min_duration_statement: 1000   # log queries slower than 1s
+postgresql_log_connections: true
+postgresql_log_disconnections: true
+postgresql_log_checkpoints: true
+postgresql_log_lock_waits: true
+postgresql_log_line_prefix: "%m [%p] %q%u@%d "
+
+# ── Databases and roles ─────────────────────────────────────────────────────
+# Set in group_vars/database. Empty here so the role is safe standalone.
 postgresql_databases: []
 postgresql_users: []
+
+# pg_hba.conf entries. ORDER MATTERS — PostgreSQL uses the FIRST matching line
+# and ignores the rest, so a broad rule above a narrow one silently disables it.
 postgresql_hba_entries: []
-postgresql_extensions: ["pg_stat_statements"]
+
+# ── Extensions ──────────────────────────────────────────────────────────────
+# pg_stat_statements needs a shared library preloaded, which requires a full
+# restart rather than a reload. Worth it: without query statistics you are
+# guessing at what is slow.
+postgresql_extensions:
+  - pg_stat_statements
+postgresql_shared_preload_libraries:
+  - pg_stat_statements
+
+# ── Replication (Phase 6) ───────────────────────────────────────────────────
+# Off. A replica on the same 4 GB host protects against nothing, and a second
+# machine is not available yet.
+postgresql_replication_enabled: false
+postgresql_replication_user: replicator
+postgresql_max_wal_senders: 3
+postgresql_wal_keep_size: "512MB"
+
+# ── Locale ──────────────────────────────────────────────────────────────────
+postgresql_encoding: UTF8
+postgresql_locale: en_US.UTF-8
+postgresql_timezone: "{{ common_timezone | default('Africa/Nairobi') }}"

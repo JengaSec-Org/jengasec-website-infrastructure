@@ -72,6 +72,23 @@ Then, before anything touches a server:
 make lint && make syntax
 ```
 
+### Checking the repo without Ansible
+
+`tests/structure-check.py` validates the whole repository — every YAML file,
+every Jinja2 template, every variable, template, role, and handler reference —
+using only `pyyaml` and `jinja2`.
+
+**No Ansible, so it runs on Windows too**, which is where it earns its keep:
+catching a missing template or a typo'd variable *before* you copy anything to
+the Debian box.
+
+```bash
+python tests/structure-check.py
+```
+
+It proves the repository is well formed. It does not prove a run will succeed —
+for that you need `make check` on the control node.
+
 **Fill in the inventory.** Every value that must change is marked `# TODO: replace`:
 
 ```bash
@@ -137,6 +154,7 @@ tests/               syntax and structure checks
 
 | Document | Purpose |
 |---|---|
+| **[docs/pre-deployment.md](docs/pre-deployment.md)** | **Start here.** What this will do to your servers, and the 41 values you must configure first |
 | [docs/runbook.md](docs/runbook.md) | How to actually deploy, phase by phase, with recovery steps |
 | [docs/variables.md](docs/variables.md) | Variable precedence and every `group_vars` key |
 | [docs/secrets.md](docs/secrets.md) | ansible-vault workflow |
@@ -150,7 +168,7 @@ Branch from `main`, open a pull request — same workflow as the platform repo.
 Before pushing:
 
 ```bash
-make lint && make syntax
+python tests/structure-check.py && make lint && make syntax
 ```
 
 When you implement a stubbed role, work through

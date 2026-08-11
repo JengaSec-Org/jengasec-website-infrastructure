@@ -1,24 +1,203 @@
 ---
 # Defaults for the `nginx` role — Phase 4.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# nginx is three things here, and the third is easy to overlook:
+#   1. TLS terminator and reverse proxy
+#   2. LOAD BALANCER across gunicorn backends
+#   3. the ONLY thing serving static and media files
+#
+# (3) is not an optimisation. whitenoise is in the platform's requirements.txt
+# but not in MIDDLEWARE, and config/urls.py serves media only when DEBUG is on.
+# With DEBUG off, Django serves neither. Without nginx the site renders unstyled
+# and every uploaded document 404s.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-nginx_enabled: false
+# Plain nginx, not nginx-extras. The extras package pulls in a dozen third-party
+# modules for one we might use (headers-more, to strip the Server header) —
+# `server_tokens off` already hides the version, which is the part that matters.
+nginx_packages:
+  - nginx
 
-# one worker per core
+nginx_service_name: nginx
+nginx_conf_dir: /etc/nginx
+nginx_log_dir: /var/log/nginx
+nginx_user: www-data
+
+# ── Worker processes ────────────────────────────────────────────────────────
 nginx_worker_processes: auto
 nginx_worker_connections: 1024
-# submission uploads are PDFs and DOCX
-nginx_client_max_body_size: "25m"
+nginx_worker_rlimit_nofile: 8192      # must not exceed the os role's nofile limit
+nginx_multi_accept: true
+
+# ── Core ────────────────────────────────────────────────────────────────────
 nginx_keepalive_timeout: 65
-nginx_gzip_enabled: true
-# one year, only once HTTPS is confirmed working
+nginx_keepalive_requests: 1000
+nginx_sendfile: true
+nginx_tcp_nopush: true
+nginx_tcp_nodelay: true
+nginx_types_hash_max_size: 2048
+nginx_server_tokens: false            # do not advertise the nginx version
+
+# Submission uploads are PDFs and DOCX. Too small and the upload fails with a
+# 413 that users read as "the site is broken"; too large and one request can
+# fill the disk.
+nginx_client_max_body_size: "25m"
+nginx_client_body_timeout: 60
+nginx_client_header_timeout: 60
+nginx_send_timeout: 60
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LOAD BALANCING
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# nginx balances requests across the gunicorn backends listed here. Today that
+# is one local socket; adding a second web host is an edit to this list.
+#
+# Fields: server (required), weight, max_fails, fail_timeout.
+nginx_upstream_name: jengasec_app
+nginx_upstream_servers:
+  - server: "unix:/run/gunicorn/gunicorn.sock"
+  # - server: "10.0.0.14:8000"
+  #   weight: 1
+  #   max_fails: 3
+  #   fail_timeout: "30s"
+
+# least_conn sends each request to the backend with the fewest active
+# connections. Better than round-robin here because request durations are wildly
+# uneven — a page view takes milliseconds, an AI evaluation takes a minute, and
+# round-robin would keep handing work to a backend already busy with one.
+#
+# Options: least_conn | round_robin (nginx's default, written as '') | ip_hash
+nginx_upstream_method: least_conn
+
+# PASSIVE health checks: after max_fails failures within fail_timeout, nginx
+# stops sending to that backend for fail_timeout, then tries again.
+#
+# nginx open source has no ACTIVE health checking — it never probes an idle
+# backend, it only learns from real requests failing. That is worth knowing
+# rather than assuming a dead backend is detected instantly.
+nginx_upstream_max_fails: 3
+nginx_upstream_fail_timeout: "30s"
+
+# Idle upstream connections kept open for reuse. Without this every proxied
+# request pays a fresh connection setup. It requires HTTP/1.1 and an empty
+# Connection header, which the proxy params below set — a very commonly missed
+# pairing that makes keepalive silently do nothing.
+nginx_upstream_keepalive: 32
+
+# Sticky sessions, via ip_hash. OFF by default, and the trade is real:
+#
+#   FOR: a judge's session stays on one backend, so in-progress work survives.
+#   AGAINST: ip_hash REPLACES least_conn, so balancing gets worse. And everyone
+#            behind one NAT address — an entire campus — lands on one backend.
+#
+# Only meaningful with more than one backend. The better fix is shared sessions
+# in Redis or the database, which the platform already has via Django sessions.
+nginx_sticky_sessions: false
+
+# ── Proxy behaviour ─────────────────────────────────────────────────────────
+# MUST be greater than gunicorn_timeout, or nginx gives up first and the user
+# gets a 504 while the worker is still doing useful work.
+nginx_proxy_read_timeout: 180
+nginx_proxy_connect_timeout: 10
+nginx_proxy_send_timeout: 180
+nginx_proxy_buffering: true
+nginx_proxy_buffers: "8 16k"
+nginx_proxy_buffer_size: "16k"
+
+# ── TLS ─────────────────────────────────────────────────────────────────────
+nginx_ssl_enabled: true
+nginx_ssl_certificate: "/etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt"
+nginx_ssl_certificate_key: "/etc/ssl/jengasec/private/{{ inventory_hostname }}.key"
+
+# TLS 1.2 and 1.3 only. 1.0 and 1.1 are deprecated and have known weaknesses.
+nginx_ssl_protocols: "TLSv1.2 TLSv1.3"
+nginx_ssl_ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+nginx_ssl_prefer_server_ciphers: false     # with TLS 1.3, client preference is fine
+nginx_ssl_session_cache: "shared:SSL:10m"
+nginx_ssl_session_timeout: "1d"
+nginx_ssl_session_tickets: false           # tickets weaken forward secrecy
+
+# OCSP stapling needs a resolver and a publicly reachable OCSP responder.
+# Off, because the internal CA has neither.
+nginx_ssl_stapling: false
+
+# ── Security headers ────────────────────────────────────────────────────────
+# HSTS tells browsers to refuse plain HTTP to this host for max-age seconds.
+# OFF until HTTPS is confirmed working: once a browser has seen the header it
+# will not fall back, so shipping it with a broken certificate locks users out
+# of the site for a year with no server-side undo.
+nginx_hsts_enabled: false
 nginx_hsts_max_age: 31536000
-# brute-force ceiling on the login form
-nginx_rate_limit_login: "5r/m"
-nginx_server_name: "platform.{{ jengasec_domain }}"
-# must match gunicorn_bind
-nginx_upstream_socket: "unix:/run/gunicorn/gunicorn.sock"
+nginx_hsts_include_subdomains: false
+nginx_hsts_preload: false
+
+nginx_security_headers:
+  X-Content-Type-Options: "nosniff"
+  X-Frame-Options: "SAMEORIGIN"
+  X-XSS-Protection: "0"        # 0 is correct: the legacy auditor caused bugs
+  Referrer-Policy: "strict-origin-when-cross-origin"
+  Permissions-Policy: "geolocation=(), microphone=(), camera=()"
+
+# Content-Security-Policy. Report-only by default — a CSP that breaks the app is
+# worse than none, so watch the reports before enforcing. The platform uses
+# Chart.js and inline template scripts, hence 'unsafe-inline' for now.
+nginx_csp_enabled: true
+nginx_csp_report_only: true
+nginx_csp_policy: >-
+  default-src 'self';
+  script-src 'self' 'unsafe-inline';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data:;
+  font-src 'self';
+  connect-src 'self';
+  frame-ancestors 'self';
+  base-uri 'self';
+  form-action 'self'
+
+# ── Rate limiting ───────────────────────────────────────────────────────────
+# Zones are shared memory keyed by client address. 10m holds roughly 160k
+# addresses — far more than this event will see.
+nginx_rate_limit_enabled: true
+nginx_rate_limit_login: "5r/m"        # login: brute-force ceiling
+nginx_rate_limit_general: "30r/s"     # everything else: absorb a page load
+nginx_rate_limit_burst_login: 5
+nginx_rate_limit_burst_general: 50
+nginx_rate_limit_zone_size: "10m"
+
+# Cap concurrent connections per address, which blunts a slow-loris attempt.
+nginx_limit_conn_enabled: true
+nginx_limit_conn_per_ip: 20
+
+# ── Compression ─────────────────────────────────────────────────────────────
+nginx_gzip_enabled: true
+nginx_gzip_comp_level: 5              # 5 is the point of diminishing returns
+nginx_gzip_min_length: 256
+nginx_gzip_types:
+  - text/plain
+  - text/css
+  - text/xml
+  - application/json
+  - application/javascript
+  - application/xml+rss
+  - image/svg+xml
+
+# ── Site ────────────────────────────────────────────────────────────────────
+nginx_server_name: "platform.{{ jengasec_domain | default('jengasec.local') }}"
+nginx_redirect_http: true
+nginx_static_dir: "{{ app_static_dir | default('/opt/jengasec/app/staticfiles') }}"
+nginx_media_dir: "{{ app_media_dir | default('/opt/jengasec/app/media') }}"
+nginx_static_expires: "30d"
+
+# Uploaded documents are served as ATTACHMENTS, never rendered inline. An
+# uploaded SVG or HTML rendered in the browser executes script in this origin —
+# which on a platform where competitors upload files to judges is a direct route
+# to stealing a judge's session.
+nginx_media_force_download: true
+
+# Remove the default site. It answers on port 80 for any unmatched Host, which
+# on a competition network is one more thing responding to a scan.
+nginx_remove_default_site: true
+
+# ── Logging ─────────────────────────────────────────────────────────────────
+nginx_access_log_format: main
+nginx_log_not_found: false            # 404s for favicon.ico are not interesting

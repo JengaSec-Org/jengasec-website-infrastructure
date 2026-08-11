@@ -1,41 +1,138 @@
 ---
 # redis — Phase 4
-# In-memory cache, session store, and future Celery broker.
-#
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Install and configure redis-server
-#   - Bind to the private interface only, never 0.0.0.0
-#   - requirepass authentication from the vault
-#   - maxmemory cap and eviction policy
-#   - Persistence policy (RDB vs AOF)
-#   - systemd hardening of the unit
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
 
-- name: Refuse to run — the redis role is not implemented yet
-  ansible.builtin.fail:
+# ── Guard ───────────────────────────────────────────────────────────────────
+
+# An exposed Redis without a password is one of the fastest routes to remote
+# code execution on a Linux host: CONFIG SET dir, CONFIG SET dbfilename, SAVE,
+# and you have written a file anywhere the redis user can write — an SSH
+# authorized_keys, for instance. Refuse the combination outright.
+- name: Refuse to expose Redis without a password
+  ansible.builtin.assert:
+    that:
+      - redis_requirepass | default('') | length >= 16
+    fail_msg: >-
+      redis_bind is '{{ redis_bind }}', which is reachable from outside this
+      host, but redis_requirepass is unset or shorter than 16 characters.
+      An exposed unauthenticated Redis is a remote code execution primitive,
+      not just a data leak. Set vault_redis_password. See docs/secrets.md.
+    success_msg: "Password set — safe to bind to {{ redis_bind }}"
+  when: redis_bind not in ['127.0.0.1', 'localhost', '::1']
+  tags: [redis, always]
+
+- name: Refuse to bind Redis to all interfaces
+  ansible.builtin.assert:
+    that:
+      - "'0.0.0.0' not in (redis_bind | string)"
+    fail_msg: >-
+      redis_bind is '{{ redis_bind }}'. Bind to a specific private address, not
+      to every interface.
+    success_msg: "Bind address is specific"
+  tags: [redis, always]
+
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Install Redis
+  ansible.builtin.apt:
+    name: "{{ redis_packages }}"
+    state: present
+  tags: [redis, packages]
+
+- name: Ensure the log directory exists
+  ansible.builtin.file:
+    path: "{{ redis_log_dir }}"
+    state: directory
+    owner: redis
+    group: adm
+    mode: "0750"
+  tags: [redis, config]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+# 0640 root:redis. The file contains requirepass in plaintext — it has to, Redis
+# reads it as the daemon user — so it must not be world-readable.
+- name: Write redis.conf
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: "{{ redis_config_file }}"
+    owner: root
+    group: redis
+    mode: "0640"
+    backup: true
+  no_log: true
+  notify: Restart redis
+  tags: [redis, config]
+
+# ── systemd hardening ───────────────────────────────────────────────────────
+# A drop-in rather than a replacement unit, so package upgrades still apply.
+
+- name: Ensure the systemd drop-in directory exists
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ redis_service_name }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: redis_systemd_hardening | bool
+  tags: [redis, hardening]
+
+- name: Harden the Redis service unit
+  ansible.builtin.template:
+    src: systemd-hardening.conf.j2
+    dest: "/etc/systemd/system/{{ redis_service_name }}.service.d/60-jengasec.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  when: redis_systemd_hardening | bool
+  notify:
+    - Reload systemd for redis
+    - Restart redis
+  tags: [redis, hardening]
+
+- name: Enable and start Redis
+  ansible.builtin.systemd:
+    name: "{{ redis_service_name }}"
+    enabled: true
+    state: started
+  tags: [redis, service]
+
+- name: Apply pending Redis changes
+  ansible.builtin.meta: flush_handlers
+  tags: [redis]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+# -a on the command line would put the password in the process list, where any
+# local user can read it with ps. REDISCLI_AUTH is read from the environment
+# instead.
+- name: Verify Redis responds
+  ansible.builtin.command:
+    cmd: "redis-cli -h {{ redis_bind }} -p {{ redis_port }} ping"
+  environment:
+    REDISCLI_AUTH: "{{ redis_requirepass }}"
+  register: redis_ping
+  changed_when: false
+  failed_when: "'PONG' not in (redis_ping.stdout | default(''))"
+  no_log: true
+  tags: [redis, verify]
+
+- name: Read back the enforced memory limit
+  ansible.builtin.command:
+    cmd: "redis-cli -h {{ redis_bind }} -p {{ redis_port }} config get maxmemory"
+  environment:
+    REDISCLI_AUTH: "{{ redis_requirepass }}"
+  register: redis_maxmem_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags: [redis, verify]
+
+# A maxmemory of 0 means unlimited, which is the setting that lets Redis grow
+# until the OOM killer takes PostgreSQL down with it.
+- name: Report the memory cap
+  ansible.builtin.debug:
     msg: >-
-      The 'redis' role is a Phase 4 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/redis/README.md.
-  when: not redis_enabled | bool
-  tags:
-    - redis
-    - stub
-
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install redis
-#   ansible.builtin.apt:
-#     name: "{{ redis_packages }}"
-#     state: present
-#   when: redis_enabled | bool
-#   notify: Restart redis
+      Redis responding on {{ redis_bind }}:{{ redis_port }}, maxmemory
+      {{ (redis_maxmem_check.stdout_lines | default(['', '0']))[1] | default('unknown') }}
+      bytes (0 would mean UNLIMITED — check redis_maxmemory if you see it)
+  tags: [redis, verify]

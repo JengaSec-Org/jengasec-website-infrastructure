@@ -1,42 +1,215 @@
 ---
 # postgresql — Phase 5
-# PostgreSQL server, databases, roles, and connection policy.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Install PostgreSQL and the contrib packages
-#   - Tune postgresql.conf for the available RAM
-#   - Render pg_hba.conf from postgresql_hba_entries
-#   - Create databases and roles from group_vars
-#   - Install extensions
-#   - Configure WAL archiving for point-in-time recovery
-#   - Streaming replication (Phase 6)
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# The database holding every submission, score, and judge override. Two things
+# follow from that: it must not be reachable from the LAN, and this role must
+# never casually restart it.
 
-- name: Refuse to run — the postgresql role is not implemented yet
-  ansible.builtin.fail:
+# ── Guard ───────────────────────────────────────────────────────────────────
+
+# 0.0.0.0 on a competition network means every participant can reach the
+# scoring database. The web host's address is what belongs here.
+- name: Refuse to listen on all interfaces
+  ansible.builtin.assert:
+    that:
+      - "'0.0.0.0' not in (postgresql_listen_addresses | string)"
+      - "'*' != (postgresql_listen_addresses | string)"
+    fail_msg: >-
+      postgresql_listen_addresses is '{{ postgresql_listen_addresses }}', which
+      exposes the scoring database to every host that can route to
+      {{ inventory_hostname }} — on a competition network, that is everyone.
+      Set it to localhost or to this host's private address.
+    success_msg: "Listening on {{ postgresql_listen_addresses }}"
+  tags: [postgresql, always]
+
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name: "{{ postgresql_packages }}"
+    state: present
+  tags: [postgresql, packages]
+
+- name: Ensure PostgreSQL is running
+  ansible.builtin.systemd:
+    name: "{{ postgresql_service_name }}"
+    enabled: true
+    state: started
+  tags: [postgresql, service]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+# `validate` runs the real binary against the candidate file before it replaces
+# the live one, so a bad setting fails the task rather than stopping the
+# database on next restart.
+- name: Write postgresql.conf
+  ansible.builtin.template:
+    src: postgresql.conf.j2
+    dest: "{{ postgresql_config_dir }}/postgresql.conf"
+    owner: postgres
+    group: postgres
+    mode: "0640"
+    backup: true
+    validate: "/usr/lib/postgresql/{{ postgresql_version }}/bin/postgres --check-config -c config_file=%s"
+  register: postgresql_conf
+  notify: Reload postgresql
+  tags: [postgresql, config]
+
+- name: Write pg_hba.conf
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ postgresql_config_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: "0640"
+    backup: true
+  notify: Reload postgresql
+  tags: [postgresql, config]
+
+# shared_preload_libraries is only read at startup. A reload will not load
+# pg_stat_statements, and the extension then fails to create with a message
+# that does not mention restarting. Detected here and handled with the restart
+# handler rather than the reload one.
+- name: Check whether preloaded libraries changed
+  ansible.builtin.command:
+    cmd: >-
+      psql -tAc "SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries'"
+  become: true
+  become_user: postgres
+  register: postgresql_current_preload
+  changed_when: false
+  failed_when: false
+  tags: [postgresql, config]
+
+- name: Restart when preloaded libraries changed
+  ansible.builtin.debug:
     msg: >-
-      The 'postgresql' role is a Phase 5 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/postgresql/README.md.
-  when: not postgresql_enabled | bool
-  tags:
-    - postgresql
-    - stub
+      shared_preload_libraries needs to become
+      '{{ postgresql_shared_preload_libraries | join(",") }}' but is currently
+      '{{ postgresql_current_preload.stdout | default("") | trim }}'. This only
+      takes effect at startup, so a full restart is queued.
+  when:
+    - postgresql_current_preload.stdout is defined
+    - (postgresql_current_preload.stdout | trim) != (postgresql_shared_preload_libraries | join(','))
+  notify: Restart postgresql
+  changed_when: true
+  tags: [postgresql, config]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install postgresql
-#   ansible.builtin.apt:
-#     name: "{{ postgresql_packages }}"
-#     state: present
-#   when: postgresql_enabled | bool
-#   notify: Restart postgresql
+- name: Apply pending configuration changes
+  ansible.builtin.meta: flush_handlers
+  tags: [postgresql]
+
+# ── Roles and databases ─────────────────────────────────────────────────────
+# Roles first: a database cannot be owned by a role that does not exist yet.
+
+- name: Create database roles
+  community.postgresql.postgresql_user:
+    name: "{{ item.name }}"
+    password: "{{ item.password | default(omit) }}"
+    role_attr_flags: "{{ item.flags | default('NOSUPERUSER,NOCREATEDB,NOCREATEROLE') }}"
+    state: present
+  become: true
+  become_user: postgres
+  loop: "{{ postgresql_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  tags: [postgresql, roles]
+
+- name: Create databases
+  community.postgresql.postgresql_db:
+    name: "{{ item.name }}"
+    owner: "{{ item.owner | default(omit) }}"
+    encoding: "{{ item.encoding | default(postgresql_encoding) }}"
+    lc_collate: "{{ item.lc_collate | default(postgresql_locale) }}"
+    lc_ctype: "{{ item.lc_ctype | default(postgresql_locale) }}"
+    template: template0        # required when specifying a locale
+    state: present
+  become: true
+  become_user: postgres
+  loop: "{{ postgresql_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [postgresql, databases]
+
+- name: Grant database privileges
+  community.postgresql.postgresql_privs:
+    db: "{{ item.db }}"
+    role: "{{ item.name }}"
+    type: database
+    privs: "{{ item.priv | default('ALL') }}"
+    state: present
+  become: true
+  become_user: postgres
+  loop: "{{ postgresql_users | selectattr('db', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.db }}"
+  tags: [postgresql, roles]
+
+# Django creates its own tables, so it needs CREATE on the schema. Since
+# PostgreSQL 15 the public schema is no longer writable by every role by
+# default — without this grant, `manage.py migrate` fails on a fresh database
+# with a permission error that reads like a connection problem.
+- name: Grant schema privileges to database owners
+  community.postgresql.postgresql_privs:
+    db: "{{ item.db }}"
+    role: "{{ item.name }}"
+    type: schema
+    objs: public
+    privs: "CREATE,USAGE"
+    state: present
+  become: true
+  become_user: postgres
+  loop: "{{ postgresql_users | selectattr('db', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.db }}.public"
+  tags: [postgresql, roles]
+
+- name: Install extensions
+  community.postgresql.postgresql_ext:
+    name: "{{ item.1 }}"
+    db: "{{ item.0.name }}"
+    state: present
+  become: true
+  become_user: postgres
+  loop: "{{ postgresql_databases | product(postgresql_extensions) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} -> {{ item.1 }}"
+  failed_when: false     # pg_stat_statements needs the restart above first
+  tags: [postgresql, extensions]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Read back the server version and settings
+  ansible.builtin.command:
+    cmd: >-
+      psql -tAc "SELECT version(), current_setting('shared_buffers'),
+                        current_setting('max_connections'),
+                        current_setting('password_encryption')"
+  become: true
+  become_user: postgres
+  register: postgresql_verify
+  changed_when: false
+  tags: [postgresql, verify]
+
+- name: Report the running configuration
+  ansible.builtin.debug:
+    msg: "{{ postgresql_verify.stdout | default('psql did not respond') }}"
+  tags: [postgresql, verify]
+
+# Proves the rule the whole design depends on. If this listed 0.0.0.0 the assert
+# at the top would have caught it, but reading back the live value costs nothing
+# and catches a hand-edit made since the last run.
+- name: Confirm the listening address
+  ansible.builtin.shell:
+    cmd: "ss -tlnp | grep ':{{ postgresql_port }}' || true"
+  args:
+    executable: /bin/bash
+  register: postgresql_listening
+  changed_when: false
+  tags: [postgresql, verify]
+
+- name: Report the listening address
+  ansible.builtin.debug:
+    msg: "{{ postgresql_listening.stdout_lines | default(['not listening']) }}"
+  tags: [postgresql, verify]

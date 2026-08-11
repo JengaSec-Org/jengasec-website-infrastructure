@@ -1,22 +1,110 @@
 ---
 # Defaults for the `django` role — Phase 4.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# Deploys the JengaSec platform: code, virtualenv, environment, migrations,
+# static files.
+#
+# Every variable name in the .env template matches config/settings.py in the
+# platform repository EXACTLY. Renaming one here silently stops it being read —
+# Django just falls back to its default, and JENGASEC_DB_NAME falling back means
+# quietly running on SQLite in production.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-django_enabled: false
+# ── Source ──────────────────────────────────────────────────────────────────
+django_repo_url: "{{ app_repo_url | default('https://github.com/JengaSec-Org/jengasec-competition-platform.git') }}"
+django_repo_branch: "{{ app_repo_branch | default('main') }}"
+django_repo_version: "{{ django_repo_branch }}"
 
-# matches the platform layout
+# false keeps local modifications and fails a checkout that would overwrite
+# them. true discards anything changed on the server. Left false: on a machine
+# where someone may have hot-fixed something at 2am, silently discarding it is
+# worse than a failed play.
+django_force_checkout: false
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+django_source_dir: "{{ app_source_dir | default('/opt/jengasec/app') }}"
+django_venv_dir: "{{ app_venv_dir | default('/opt/jengasec/venv') }}"
+django_env_file: "{{ app_root | default('/opt/jengasec') }}/.env"
+django_static_dir: "{{ app_static_dir | default('/opt/jengasec/app/staticfiles') }}"
+django_media_dir: "{{ app_media_dir | default('/opt/jengasec/app/media') }}"
+django_log_dir: "{{ app_log_dir | default('/var/log/jengasec') }}"
+
+django_user: "{{ app_user | default('jengasec') }}"
+django_group: "{{ app_group | default('jengasec') }}"
+
+# ── Python ──────────────────────────────────────────────────────────────────
+django_python: "{{ python_interpreter | default('/usr/bin/python3') }}"
+django_requirements_file: "{{ django_source_dir }}/requirements.txt"
+django_pip_upgrade: false          # pin behaviour; requirements.txt is the source of truth
+
+# ── Application settings ────────────────────────────────────────────────────
 django_settings_module: "config.settings"
-# MUST stay false in production
-django_debug: false
-# set per host group
+django_manage: "{{ django_venv_dir }}/bin/python {{ django_source_dir }}/manage.py"
+
+django_debug: false                # MUST stay false in production
 django_allowed_hosts: []
+django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
+
+# ── CSRF and proxy ──────────────────────────────────────────────────────────
+# Django 4+ rejects any POST whose Origin is not in CSRF_TRUSTED_ORIGINS. Behind
+# nginx with TLS, that means EVERY login fails until this is set — with an error
+# that does not mention the cause.
+#
+# Entries must include the scheme: https://platform.jengasec.local
+django_csrf_trusted_origins: >-
+  {{ django_allowed_hosts
+     | reject('equalto', '*')
+     | map('regex_replace', '^(.*)$', 'https://\\1')
+     | list }}
+
+# Read by settings.py to enable HSTS at the Django layer. Left at 0 because
+# nginx sets the header; setting both means two sources for one policy.
+django_hsts_seconds: 0
+
+# ── Database ────────────────────────────────────────────────────────────────
+# Setting JENGASEC_DB_NAME is what switches settings.py off SQLite. It is always
+# written for that reason — an unset value means production silently running on
+# a SQLite file that no backup covers.
+django_db_name: jengasec
+django_db_user: jengasec
+django_db_password: "{{ vault_postgresql_jengasec_password }}"
+django_db_host: "127.0.0.1"
+django_db_port: 5432
+django_db_sslmode: prefer          # 'require' once certificates are distributed
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+django_redis_enabled: false        # the platform does not read these yet
+django_redis_host: "127.0.0.1"
+django_redis_port: 6379
+django_redis_password: "{{ vault_redis_password | default('') }}"
+
+# ── Ollama ──────────────────────────────────────────────────────────────────
+django_ollama_base_url: "{{ ollama_base_url | default('http://localhost:11434') }}"
+django_ollama_model: "{{ ollama_model | default('llama3') }}"
+
+# ── SMTP ────────────────────────────────────────────────────────────────────
+django_smtp_host: "{{ vault_smtp_host | default('localhost') }}"
+django_smtp_port: "{{ vault_smtp_port | default(587) }}"
+django_smtp_user: "{{ vault_smtp_user | default('') }}"
+django_smtp_password: "{{ vault_smtp_password | default('') }}"
+django_smtp_use_tls: true
+
+# ── Deployment steps ────────────────────────────────────────────────────────
 django_run_migrations: true
 django_collectstatic: true
-# create the first admin by hand, interactively
+
+# Never true in an automated run. Creating an admin non-interactively means its
+# password exists in a variable somewhere, and this account can see every
+# submission and change every score. Make it by hand, once:
+#     sudo -u jengasec /opt/jengasec/venv/bin/python manage.py createsuperuser
 django_superuser_create: false
-django_env_file: "{{ app_root }}/.env"
-django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
+
+# `manage.py check --deploy` audits the settings for production readiness. Run
+# as a report rather than a gate, because some of its warnings are answered by
+# nginx rather than by Django.
+django_run_deploy_check: true
+
+# ── Guard ───────────────────────────────────────────────────────────────────
+# Refuse to deploy a checkout whose settings.py lacks the proxy and CSRF
+# handling. Without them the site deploys "successfully" and then rejects every
+# login — a failure that looks like a user problem, not a deployment one.
+django_require_proxy_settings: true
