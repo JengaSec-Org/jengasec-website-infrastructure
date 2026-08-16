@@ -1,14 +1,11 @@
 ---
 # Phase 5 — Database
 #
-# STATUS: stub. See roles/postgresql/README.md.
-#
 #   make database LIMIT=server2
 #
-# When implemented, the ordering constraint that matters is that PostgreSQL must
-# be listening and its firewall rule in place BEFORE django.yml runs migrations
-# against it — otherwise the migration fails halfway and leaves a partially
-# migrated schema, which is more work to unpick than to prevent.
+# Run BEFORE playbooks/platform.yml. Django's migrations need somewhere to run,
+# and a migration that fails halfway leaves a partially migrated schema, which
+# is more work to unpick than to prevent.
 
 - name: "Phase 5 — PostgreSQL"
   hosts: database
@@ -18,3 +15,20 @@
   roles:
     - role: postgresql
       tags: [postgresql, database]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 5 complete on {{ inventory_hostname }}."
+          - ""
+          - "Confirm the web host can actually connect — this is the check that"
+          - "matters, and it must be run FROM server1:"
+          - "  psql \"host={{ ansible_host | default(inventory_hostname) }} dbname={{ django_db_name | default('jengasec') }} user={{ django_db_user | default('jengasec') }}\" -c 'SELECT 1;'"
+          - ""
+          - "From any other host the same command must FAIL. If it succeeds, the"
+          - "firewall rule in group_vars/database is not doing its job and the"
+          - "scoring database is reachable from the competition network."
+          - ""
+          - "Next: make platform LIMIT=server1"
+      tags: [always]

@@ -1,0 +1,22 @@
+# {{ common_managed_banner }}
+#
+# Monthly restore verification.
+#
+# Monthly rather than nightly because it restores a full database and costs real
+# IO on the database host. Monthly is frequent enough to catch a backup that has
+# quietly started producing truncated dumps, which is the failure this exists to
+# find — a corrupt backup looks exactly like a good one until you try it.
+
+[Unit]
+Description=JengaSec monthly backup verification
+Documentation=file:///usr/local/sbin/jengasec-backup-verify
+
+[Timer]
+OnCalendar={{ backup_verify_schedule }}
+
+# Catch up if the host was down on the first of the month.
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

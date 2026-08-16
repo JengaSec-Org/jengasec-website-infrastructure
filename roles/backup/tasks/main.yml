@@ -1,41 +1,309 @@
 ---
 # backup — Phase 10
-# Backups of the database, media, and configuration, with verified restores.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - pg_dump of the application database on a schedule
-#   - rsync of app_media_dir and /etc
-#   - Compression and GPG encryption before the data leaves the host
-#   - Retention: daily, weekly, monthly tiers
-#   - Restore procedure, scripted rather than remembered
-#   - Automated restore verification into a scratch database
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Pulls from the source hosts, compresses, encrypts, rotates, and verifies.
+# Runs on server3. See the banner in defaults/main.yml for why it pulls.
 
-- name: Refuse to run — the backup role is not implemented yet
+- name: Report that backups are disabled
+  ansible.builtin.debug:
+    msg: >-
+      backup_enabled is false, so no backups are configured on
+      {{ inventory_hostname }}. For an event whose submissions and judge scores
+      cannot be recreated, this should not stay false.
+  when: not (backup_enabled | bool)
+  tags: [backup, always]
+
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Assert sources are defined
+  ansible.builtin.assert:
+    that:
+      - backup_sources | length > 0
+    fail_msg: >-
+      backup_enabled is true but backup_sources is empty. The role would run
+      nightly, succeed, and back up nothing — which is worse than not running,
+      because it looks like it is working.
+    success_msg: "{{ backup_sources | length }} source(s) configured"
+  when: backup_enabled | bool
+  tags: [backup, always]
+
+# An unencrypted archive of submissions and scores, sitting on the spare box
+# that is also the monitoring host. Anyone who gets a shell there has the whole
+# competition.
+- name: Assert a GPG recipient is set when encryption is on
+  ansible.builtin.assert:
+    that:
+      - backup_gpg_recipient | length > 0
+    fail_msg: >-
+      backup_encrypt is true but backup_gpg_recipient is empty. Set it in
+      group_vars/backup/main.yml, and put the matching PUBLIC key in
+      roles/backup/files/{{ backup_gpg_public_key }}. Encrypting to a public key
+      means this host cannot decrypt what it stores, which is the point.
+    success_msg: "Encrypting to {{ backup_gpg_recipient }}"
+  when:
+    - backup_enabled | bool
+    - backup_encrypt | bool
+  tags: [backup, always]
+
+# ── Packages and layout ─────────────────────────────────────────────────────
+
+- name: Install backup tooling
+  ansible.builtin.apt:
+    name: "{{ backup_packages }}"
+    state: present
+  when: backup_enabled | bool
+  tags: [backup, packages]
+
+# 0700. The contents are encrypted, but the filenames alone reveal what exists
+# and when it was taken.
+- name: Create the backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0700"
+  loop:
+    - "{{ backup_root }}"
+    - "{{ backup_daily_dir }}"
+    - "{{ backup_weekly_dir }}"
+    - "{{ backup_monthly_dir }}"
+    - "{{ backup_work_dir }}"
+  when: backup_enabled | bool
+  tags: [backup, directories]
+
+- name: Ensure the log directory exists
+  ansible.builtin.file:
+    path: "{{ backup_log_dir }}"
+    state: directory
+    owner: root
+    group: adm
+    mode: "0750"
+  when: backup_enabled | bool
+  tags: [backup, directories]
+
+# ── SSH identity ────────────────────────────────────────────────────────────
+#
+# The backup account here needs a shell to run ssh; on the SOURCE hosts it stays
+# nologin and is reached through a forced-command key instead.
+
+- name: Give the backup account a shell on this host only
+  ansible.builtin.user:
+    name: "{{ backup_user }}"
+    shell: /bin/bash
+    home: "/home/{{ backup_user }}"
+    create_home: true
+  when: backup_enabled | bool
+  tags: [backup, ssh]
+
+- name: Create the .ssh directory
+  ansible.builtin.file:
+    path: "/home/{{ backup_user }}/.ssh"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0700"
+  when: backup_enabled | bool
+  tags: [backup, ssh]
+
+- name: Generate the pull key
+  ansible.builtin.command:
+    cmd: "ssh-keygen -t ed25519 -f {{ backup_ssh_key }} -N '' -C 'jengasec-backup@{{ inventory_hostname }}' -q"
+    creates: "{{ backup_ssh_key }}"
+  become: true
+  become_user: "{{ backup_user }}"
+  when: backup_enabled | bool
+  tags: [backup, ssh]
+
+- name: Read the public key
+  ansible.builtin.slurp:
+    src: "{{ backup_ssh_key }}.pub"
+  register: backup_pubkey
+  when: backup_enabled | bool
+  tags: [backup, ssh]
+
+# The role cannot install this itself — it would need root on the source hosts
+# from within a play targeting server3. Printing it with the exact line to add
+# is the honest alternative to a task that silently does not work.
+- name: Show the key that must be installed on the source hosts
+  ansible.builtin.debug:
+    msg:
+      - "Install this on each source host as a FORCED-COMMAND entry in"
+      - "/home/{{ backup_user }}/.ssh/authorized_keys — see roles/backup/README.md."
+      - ""
+      - 'command="/usr/bin/rrsync -ro /",restrict,from="{{ ansible_default_ipv4.address | default("10.0.0.13") }}" {{ backup_pubkey.content | b64decode | trim }}'
+      - ""
+      - "restrict disables port forwarding, agent forwarding, PTY and X11."
+      - "rrsync -ro allows exactly one read-only rsync and nothing else, so this"
+      - "key cannot be used for a shell even if it is stolen."
+  when: backup_enabled | bool
+  tags: [backup, ssh]
+
+# ── GPG ─────────────────────────────────────────────────────────────────────
+
+- name: Install the backup public key
+  ansible.builtin.copy:
+    src: "{{ backup_gpg_public_key }}"
+    dest: "{{ backup_root }}/{{ backup_gpg_public_key }}"
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0600"
+  register: backup_gpg_key_file
+  failed_when: false
+  when:
+    - backup_enabled | bool
+    - backup_encrypt | bool
+  tags: [backup, gpg]
+
+- name: Explain a missing public key
   ansible.builtin.fail:
     msg: >-
-      The 'backup' role is a Phase 10 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/backup/README.md.
-  when: not backup_enabled | bool
-  tags:
-    - backup
-    - stub
+      roles/backup/files/{{ backup_gpg_public_key }} does not exist. Generate a
+      key pair somewhere OTHER than this host, export the public half, and put it
+      there:
+        gpg --full-generate-key
+        gpg --armor --export {{ backup_gpg_recipient }} > {{ backup_gpg_public_key }}
+      Keep the private key off the backup host — that is what stops someone who
+      compromises server3 from reading everything it stores.
+  when:
+    - backup_enabled | bool
+    - backup_encrypt | bool
+    - backup_gpg_key_file is failed
+  tags: [backup, gpg]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install backup
-#   ansible.builtin.apt:
-#     name: "{{ backup_packages }}"
-#     state: present
-#   when: backup_enabled | bool
-#   notify: Restart backup
+- name: Import the public key into the backup keyring
+  ansible.builtin.command:
+    cmd: "gpg --batch --import {{ backup_root }}/{{ backup_gpg_public_key }}"
+  become: true
+  become_user: "{{ backup_user }}"
+  register: backup_gpg_import
+  changed_when: "'imported' in (backup_gpg_import.stderr | default(''))"
+  failed_when: false
+  when:
+    - backup_enabled | bool
+    - backup_encrypt | bool
+    - backup_gpg_key_file is not failed
+  tags: [backup, gpg]
+
+# gpg refuses to encrypt to a key it does not trust, and there is no human to
+# answer the prompt in a timer. Ultimate trust on a key we chose deliberately is
+# correct here.
+- name: Trust the backup key
+  ansible.builtin.shell:
+    cmd: >-
+      gpg --batch --list-keys --with-colons {{ backup_gpg_recipient }}
+      | awk -F: '/^fpr:/ {print $10 ":6:"; exit}'
+      | gpg --batch --import-ownertrust
+  become: true
+  become_user: "{{ backup_user }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when:
+    - backup_enabled | bool
+    - backup_encrypt | bool
+  tags: [backup, gpg]
+
+# ── Scripts ─────────────────────────────────────────────────────────────────
+
+- name: Install the backup scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/usr/local/sbin/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - { src: backup-run.sh.j2, dest: jengasec-backup }
+    - { src: backup-verify.sh.j2, dest: jengasec-backup-verify }
+    - { src: backup-restore.sh.j2, dest: jengasec-restore }
+  loop_control:
+    label: "{{ item.dest }}"
+  when: backup_enabled | bool
+  tags: [backup, scripts]
+
+# ── Timers ──────────────────────────────────────────────────────────────────
+
+- name: Install the backup units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - jengasec-backup.service
+    - jengasec-backup.timer
+    - jengasec-backup-verify.service
+    - jengasec-backup-verify.timer
+    # Referenced by OnFailure in both services above. Without it a failing
+    # backup is visible only to whoever runs journalctl — and nobody runs
+    # journalctl on a server that appears to be working.
+    - jengasec-backup-failed.service
+  when: backup_enabled | bool
+  notify: Reload systemd for backup
+  tags: [backup, timers]
+
+- name: Reload systemd so the new units are visible
+  ansible.builtin.meta: flush_handlers
+  tags: [backup]
+
+- name: Enable the backup timer
+  ansible.builtin.systemd:
+    name: jengasec-backup.timer
+    enabled: true
+    state: started
+  when: backup_enabled | bool
+  tags: [backup, timers]
+
+- name: Enable the verification timer
+  ansible.builtin.systemd:
+    name: jengasec-backup-verify.timer
+    enabled: true
+    state: started
+  when:
+    - backup_enabled | bool
+    - backup_verify_enabled | bool
+  tags: [backup, timers]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Check for a recent backup
+  ansible.builtin.find:
+    paths: "{{ backup_daily_dir }}"
+    age: "-{{ backup_max_age_hours }}h"
+    patterns: "*.gpg,*.gz"
+    recurse: true
+  register: backup_recent
+  when: backup_enabled | bool
+  tags: [backup, verify]
+
+# A backup job that quietly stopped working weeks ago is the normal way this
+# goes wrong, and nothing else would notice.
+- name: Report backup freshness
+  ansible.builtin.debug:
+    msg: >-
+      {{ backup_recent.matched | default(0) }} backup file(s) newer than
+      {{ backup_max_age_hours }}h in {{ backup_daily_dir }}.
+      {{ 'NONE — either this is the first run, or the timer has been failing.
+          Check: systemctl status jengasec-backup.timer and
+          journalctl -u jengasec-backup -n 50'
+         if (backup_recent.matched | default(0)) == 0 else '' }}
+  when: backup_enabled | bool
+  tags: [backup, verify]
+
+- name: Report the timer schedule
+  ansible.builtin.command:
+    cmd: systemctl list-timers jengasec-backup.timer --no-pager
+  register: backup_timer_state
+  changed_when: false
+  failed_when: false
+  when: backup_enabled | bool
+  tags: [backup, verify]
+
+- name: Show the next scheduled run
+  ansible.builtin.debug:
+    msg: "{{ backup_timer_state.stdout_lines | default(['timer not found']) }}"
+  when: backup_enabled | bool
+  tags: [backup, verify]

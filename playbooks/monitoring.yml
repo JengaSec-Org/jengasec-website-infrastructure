@@ -1,14 +1,11 @@
 ---
 # Phase 7 — Monitoring and logging
 #
-# STATUS: both roles are stubs.
-#
 #   make monitoring
 #
-# node_exporter goes on every host in the `monitored` group; Prometheus and
-# Grafana go on the monitoring host only. Keeping the collector off the web and
-# database hosts is deliberate — monitoring should survive the failure it exists
-# to report.
+# node_exporter goes on every host in `monitored`; Prometheus and Grafana go on
+# the monitoring host only. Keeping the collector off the web and database hosts
+# is deliberate — monitoring should survive the failure it exists to report.
 
 - name: "Phase 7 — log management"
   hosts: infra
@@ -16,6 +13,7 @@
   gather_facts: true
 
   roles:
+    # Owns logrotate and rsyslog. Journald belongs to the `os` role.
     - role: logging
       tags: [logging]
 
@@ -25,7 +23,7 @@
   gather_facts: true
 
   roles:
-    # node_exporter only. Prometheus and Grafana are in the play below.
+    # The role reads group membership and installs node_exporter only.
     - role: monitoring
       tags: [monitoring, node-exporter]
 
@@ -35,5 +33,21 @@
   gather_facts: true
 
   roles:
+    # Same role; this host is also in `monitoring`, so Prometheus and Grafana
+    # are installed as well.
     - role: monitoring
       tags: [monitoring, prometheus, grafana]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 7 complete."
+          - ""
+          - "The check that matters — any target reporting 'down' means the"
+          - "exporter is not running there, or the firewall is blocking this host:"
+          - "  curl -s localhost:9090/api/v1/targets | grep -o '\"health\":\"[a-z]*\"'"
+          - ""
+          - "Then open Grafana at http://{{ inventory_hostname }}:{{ grafana_port | default(3000) }}"
+          - "and sign in as {{ grafana_admin_user | default('admin') }} with the vault password."
+      tags: [always]

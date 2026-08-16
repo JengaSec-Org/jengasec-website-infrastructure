@@ -17,23 +17,48 @@
 
 # ── Guards ──────────────────────────────────────────────────────────────────
 
+# networking_gateway is deliberately NOT required.
+#
+# A host has exactly one default route. On a machine with a management NIC and a
+# data NIC — or a VirtualBox lab with NAT plus host-only — only one interface
+# carries the gateway, and this role may well be managing the other one.
+#
+# Setting a gateway on both gives the host two default routes and whichever
+# ifupdown installs last wins; the symptom is apt breaking after a reboot with
+# nothing in the logs pointing at the network configuration.
 - name: Assert the interface configuration is complete
   ansible.builtin.assert:
     that:
       - networking_interface | length > 0
       - networking_address | length > 0
-      - networking_gateway | length > 0
       - networking_dns_servers | length > 0
     fail_msg: >-
       Incomplete network configuration for {{ inventory_hostname }}. Applying a
       partial configuration takes the host off the network. Set
-      networking_interface, networking_address, networking_gateway and
-      networking_dns_servers in
+      networking_interface, networking_address and networking_dns_servers in
       inventories/{{ jengasec_environment | default('production') }}/host_vars/{{ inventory_hostname }}.yml
-    success_msg: "Configuration complete for {{ networking_interface }}"
+    success_msg: >-
+      Configuration complete for {{ networking_interface }}
+      {{ '(no gateway — secondary interface)' if networking_gateway | length == 0
+         else '(gateway ' ~ networking_gateway ~ ')' }}
   when:
     - networking_configure | bool
     - networking_method == 'static'
+  tags: [networking, always]
+
+# A host with no default route at all reaches nothing off its own subnet, which
+# on the primary interface is almost never intended.
+- name: Warn when no interface carries a default route
+  ansible.builtin.debug:
+    msg: >-
+      networking_gateway is empty for {{ networking_interface }}. That is correct
+      for a secondary interface, but make sure ANOTHER interface provides the
+      default route — check with `ip route show default` before you rely on this
+      host reaching anything off its own subnet.
+  when:
+    - networking_configure | bool
+    - networking_method == 'static'
+    - networking_gateway | length == 0
   tags: [networking, always]
 
 # Catches the single most common mistake: assuming eth0 on a Debian 12 host that

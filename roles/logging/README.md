@@ -1,55 +1,123 @@
 # `logging`
 
-**Phase 7 · NOT YET IMPLEMENTED**
+**Phase 7 · Implemented**
 
-Journal retention, logrotate, and syslog forwarding.
+Log rotation and syslog routing.
 
-## Status
+## What this role does *not* own
 
-This role is a stub. Running it raises a failure rather than silently doing
-nothing — see `tasks/main.yml` for why.
+**Journald.** The [`os`](../os/README.md) role owns
+`/etc/systemd/journald.conf.d` via `os_journald_max_use` and friends.
 
-## Planned responsibilities
+Two roles writing one file is the collision the house rules forbid, and the
+symptom here would be a journal size cap that changes depending on which role
+ran last. To change journal retention, edit the `os` role's variables.
 
-- Cap journald size and retention
-- Logrotate policies for nginx, gunicorn, and PostgreSQL
-- Forward to a central collector (Loki, Graylog, or ELK) later
-- Keep audit logs on a separate rotation from application logs
+This role owns **logrotate and rsyslog**. That is the whole boundary.
+
+## `postrotate` is the point
+
+A daemon holding an open file descriptor keeps writing to the rotated-away
+inode. The new file stays empty, the old one grows invisibly, and the disk fills
+with a file `ls` no longer shows where you expect it.
+
+That is why nginx gets `kill -USR1` and Redis gets the same. gunicorn does not
+need one — it logs to the journal.
+
+`sharedscripts` runs `postrotate` **once** for the whole set rather than per
+file. Without it, a wildcard matching five nginx logs signals nginx five times.
+
+## No shared defaults file
+
+There is deliberately no `00-jengasec-defaults` in `/etc/logrotate.d`.
+
+Global directives in an included file apply to every file logrotate reads
+**after** it, in alphabetical order — so a `00-` file silently changes the
+behaviour of Debian's own rules for apt, dpkg and the rest. Each rule here is
+self-contained instead: more repetition in the template, no action at a
+distance.
+
+## Rules are host-aware
+
+Each entry carries a `when`, so the PostgreSQL rules land only on the database
+host and the nginx rules only on the web host. A rule naming a path that never
+exists is not an error, but it is noise in a directory someone will be reading
+during an incident.
+
+| Rule | Host | Keeps | Note |
+|---|---|---|---|
+| nginx | `web` | 30 days | Access logs are the incident record |
+| jengasec | `web` | 30 days | Django's own file logger, if added |
+| postgresql | `database` | 30 days | Backstop — the collector rotates too |
+| redis | `database` | 7 days | Cache logs age out fast |
+
+## Auth log
+
+`logging_separate_auth_log` writes auth events to `/var/log/auth.log` as well as
+the journal.
+
+journalctl already has them, so why a file: it survives journal rotation, it can
+be copied off the host without journalctl, and `sudo cp auth.log` is a lower bar
+than teaching someone journalctl at 2am.
+
+## Remote forwarding is off — consider turning it on
+
+`logging_remote_enabled: false`, and this is the setting most worth revisiting
+before the competition.
+
+**Logs on a compromised host are evidence an attacker can edit.** Shipping them
+elsewhere is the only way to have a copy they cannot reach. If the club stands
+up a collector — Loki, Graylog, or plain rsyslog on server3 — turn this on.
+
+Two details when you do:
+
+- **Use TCP** (`@@`), not UDP. UDP silently drops messages under load, which is
+  precisely when the log matters.
+- **Leave the disk queue on.** Without it rsyslog buffers in memory and discards
+  when full — and it fills fastest during exactly the incident you need.
+
+## Validation
+
+Both configurations are checked before anything restarts:
+
+- `logrotate --debug` parses every rule and reports what it *would* do. A syntax
+  error makes logrotate skip that file silently on its real run, so nothing
+  rotates and nobody notices until the disk is full.
+- `rsyslogd -N1` validates syntax without starting.
 
 ## Variables
 
-Defined in `defaults/main.yml`; override in `group_vars/`, never by editing the
-role.
+| Variable | Default |
+|---|---|
+| `logging_logrotate_frequency` | `daily` |
+| `logging_logrotate_rotate` | `14` |
+| `logging_logrotate_configs` | 4 rules, host-scoped |
+| `logging_rsyslog_enabled` | `true` |
+| `logging_separate_auth_log` | `true` |
+| `logging_remote_enabled` | `false` |
+| `logging_remote_protocol` | `tcp` |
 
-| Variable | Default | Notes |
-|---|---|---|
-| `logging_enabled` | `false` | Guard. Set true only once the tasks exist. |
-| `logging_journald_max_use` | `"500M"` | an uncapped journal fills the disk |
-| `logging_journald_max_retention` | `"30day"` | — |
-| `logging_logrotate_frequency` | `daily` | — |
-| `logging_logrotate_rotate` | `14` | — |
-| `logging_logrotate_compress` | `true` | — |
-| `logging_remote_enabled` | `false` | — |
-| `logging_remote_host` | `""` | — |
+## Tags
 
-## Example play
+`logging`, `packages`, `logrotate`, `rsyslog`, `permissions`, `service`,
+`verify`
 
-```yaml
-- name: Configure logging
-  hosts: infra
-  become: true
-  roles:
-    - role: logging
-      tags: [logging]
+## Verifying
+
+```bash
+sudo logrotate --debug /etc/logrotate.conf
+sudo rsyslogd -N1
+ls -la /etc/logrotate.d/
+du -sh /var/log
+journalctl --disk-usage
 ```
 
-## Implementing this role
+Force a rotation to prove `postrotate` works:
 
-1. Fill in `defaults/main.yml` — every value the role needs, none of them literal in tasks.
-2. Write the templates in `templates/` as `.j2`, each starting with the managed banner.
-3. Write `tasks/main.yml`, referencing only variables.
-4. Add handlers for anything that needs a restart or reload.
-5. Delete the `fail` task and flip `logging_enabled` to `true`.
-6. Update the status table in [docs/roles.md](../../docs/roles.md).
-7. `make lint && make syntax`, then run twice against staging — the second run
-   must report zero changes.
+```bash
+sudo logrotate -f /etc/logrotate.d/jengasec-nginx
+ls -l /var/log/nginx/
+```
+
+The new `access.log` should exist and be growing. If it stays at zero bytes
+while a `.1` file keeps growing, the `postrotate` signal is not reaching nginx.

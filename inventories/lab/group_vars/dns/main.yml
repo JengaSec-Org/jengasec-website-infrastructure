@@ -1,0 +1,57 @@
+---
+# Lab DNS — Bind9 on server2.
+#
+# Worth running in the lab: it is how `platform.jengasec.lab` resolves at all,
+# and the transfer-refusal test is one you can actually perform here.
+
+firewall_rules_group:
+  - port: 53
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (TCP)"
+  - port: 53
+    proto: udp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (UDP)"
+
+dns_recursion_allowed_from:
+  - localhost
+  - "{{ jengasec_network_cidr }}"
+
+# Bind9 reaches these through the VM's NAT adapter, so the lab has working
+# external resolution as long as the NAT interface is up.
+dns_forwarders:
+  - 1.1.1.1
+  - 8.8.8.8
+
+dns_zone: "{{ jengasec_domain }}"
+dns_zone_admin_email: "admin.{{ jengasec_domain }}"
+dns_zone_primary_ns: "ns1.{{ jengasec_domain }}"
+
+dns_reverse_zone: "56.168.192.in-addr.arpa"
+dns_reverse_prefix: "192.168.56"
+
+dns_records:
+  - { name: "@",          type: A,     value: "192.168.56.12" }
+  - { name: "ns1",        type: A,     value: "192.168.56.12" }
+  - { name: "server1",    type: A,     value: "192.168.56.11" }
+  - { name: "server2",    type: A,     value: "192.168.56.12" }
+  - { name: "server3",    type: A,     value: "192.168.56.13" }
+  - { name: "platform",   type: CNAME, value: "server1" }
+  - { name: "db",         type: CNAME, value: "server2" }
+  - { name: "backup",     type: CNAME, value: "server3" }
+  - { name: "grafana",    type: CNAME, value: "server3" }
+  - { name: "prometheus", type: CNAME, value: "server3" }
+
+dns_reverse_records:
+  - { octet: "11", name: "server1.{{ jengasec_domain }}." }
+  - { octet: "12", name: "server2.{{ jengasec_domain }}." }
+  - { octet: "13", name: "server3.{{ jengasec_domain }}." }
+
+# Refused, as in production. Prove it:
+#   dig @192.168.56.12 jengasec.lab AXFR      # must say "Transfer failed"
+dns_allow_transfer: []
+
+# Off. One line per query fills a small VM disk faster than you would expect —
+# turn it on briefly if you want to watch resolution happen, then off again.
+dns_query_logging: false

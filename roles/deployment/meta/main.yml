@@ -3,7 +3,7 @@ galaxy_info:
   role_name: deployment
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: Application release, rollback, and service orchestration.
+  description: Ship a revision to a running platform, verify it, roll back on failure.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,9 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - deployment
 
+# Assumes the platform already exists — the `django` and `gunicorn` roles built
+# it. Not declared as a dependency, because pulling `django` in would turn every
+# deployment into a full rebuild.
 dependencies: []

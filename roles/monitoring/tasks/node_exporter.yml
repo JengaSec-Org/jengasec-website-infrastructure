@@ -1,0 +1,53 @@
+---
+# monitoring — node_exporter, on every host in the `monitored` group.
+
+- name: Install node_exporter
+  ansible.builtin.apt:
+    name: "{{ node_exporter_package }}"
+    state: present
+  tags: [monitoring, node-exporter, packages]
+
+# Debian's package reads its flags from /etc/default. Editing the unit file
+# directly would be overwritten on upgrade.
+- name: Configure node_exporter
+  ansible.builtin.template:
+    src: node-exporter-defaults.j2
+    dest: /etc/default/prometheus-node-exporter
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+  tags: [monitoring, node-exporter, config]
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_service }}"
+    enabled: true
+    state: started
+  tags: [monitoring, node-exporter, service]
+
+- name: Apply pending node_exporter changes
+  ansible.builtin.meta: flush_handlers
+  tags: [monitoring, node-exporter]
+
+# Scraping its own endpoint proves both that the exporter works and that it is
+# bound where Prometheus will look for it.
+- name: Verify node_exporter responds
+  ansible.builtin.uri:
+    url: "http://{{ node_exporter_bind }}:{{ node_exporter_port }}/metrics"
+    return_content: false
+    timeout: 10
+  register: monitoring_node_probe
+  changed_when: false
+  failed_when: false
+  tags: [monitoring, node-exporter, verify]
+
+- name: Report node_exporter state
+  ansible.builtin.debug:
+    msg: >-
+      node_exporter on {{ node_exporter_bind }}:{{ node_exporter_port }} returned
+      {{ monitoring_node_probe.status | default('no response') }}.
+      {{ 'Prometheus on the monitoring host will scrape this address — check the
+          firewall rule in group_vars/monitored allows it.'
+         if (monitoring_node_probe.status | default(0)) != 200 else '' }}
+  tags: [monitoring, node-exporter, verify]

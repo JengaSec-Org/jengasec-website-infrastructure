@@ -1,0 +1,72 @@
+---
+# Phase 9 — Public access via Cloudflare Tunnel
+#
+#   ansible-playbook -i inventories/production playbooks/cloudflare.yml
+#
+# Makes the platform reachable off campus WITHOUT opening an inbound port.
+# cloudflared dials out to Cloudflare and holds the connection open; requests
+# arrive down it.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  FOUR THINGS MUST EXIST IN CLOUDFLARE FIRST. Ansible cannot create them.  │
+# │                                                                           │
+# │    1. an account, and a REAL domain added to it as a zone                 │
+# │       (.local cannot be used — Cloudflare will not serve it)              │
+# │    2. a tunnel: Zero Trust > Networks > Tunnels > Create                  │
+# │    3. its token, into the vault as vault_cloudflare_tunnel_token          │
+# │    4. a DNS record for the public hostname, pointing at the tunnel        │
+# │                                                                           │
+# │  docs/runbook.md walks through all four. The role asserts each and names  │
+# │  the missing step rather than failing obscurely.                          │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Run this AFTER platform.yml. The tunnel forwards to nginx and verifies its
+# certificate against the internal CA, so both must already be in place.
+
+- name: "Phase 9 — Cloudflare Tunnel"
+  hosts: web
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Confirm nginx is serving before exposing it
+      ansible.builtin.command:
+        cmd: "systemctl is-active nginx"
+      register: cloudflare_nginx_state
+      changed_when: false
+      failed_when: false
+      tags: [always]
+
+    - name: Warn about an origin that is not running
+      ansible.builtin.debug:
+        msg: >-
+          nginx is {{ cloudflare_nginx_state.stdout | default('unknown') }} on
+          {{ inventory_hostname }}. A tunnel with a dead origin registers with
+          Cloudflare quite happily and then returns 502 to every visitor — which
+          looks like Cloudflare being broken rather than the origin. Run
+          playbooks/platform.yml first.
+      when: cloudflare_nginx_state.stdout | default('') != 'active'
+      tags: [always]
+
+  roles:
+    - role: cloudflare
+      tags: [cloudflare]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 9 complete on {{ inventory_hostname }}."
+          - ""
+          - "Test from OFF campus — a phone on mobile data is the honest check:"
+          - "  curl -I https://platform.{{ jengasec_public_domain | default('jengasec.example') }}/healthz/"
+          - ""
+          - "Then confirm the origin is NOT directly reachable, which is the"
+          - "entire point of a tunnel:"
+          - "  curl --connect-timeout 5 https://<server1-public-address>/   # must time out"
+          - ""
+          - "And test /admin/ from a LOGGED-OUT browser. A Cloudflare Access"
+          - "policy that excludes the organisers locks them out of scoring, and"
+          - "the fix is in Cloudflare's dashboard — not somewhere Ansible can"
+          - "reach while everyone is waiting."
+      tags: [always]

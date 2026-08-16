@@ -1,0 +1,120 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# Prove the backups can actually be restored.
+#
+# A backup that has never been restored is a hope, not a backup. This restores
+# the newest dump into a scratch database on {{ backup_verify_host }}, counts the
+# tables, and drops it — turning "we have backups" into something you know
+# rather than something you assume.
+#
+# Silence means success.
+#
+# Requires the GPG PRIVATE key, which deliberately does not live on this host.
+# See the note at the bottom.
+
+set -uo pipefail
+
+LOG="{{ backup_log_dir }}/backup-verify.log"
+WORK=$(mktemp -d "{{ backup_work_dir }}/verify.XXXXXX")
+SSH_OPTS="{{ backup_ssh_opts }} -i {{ backup_ssh_key }}"
+DB="{{ backup_verify_scratch_db }}"
+PROBLEMS=0
+
+log() { printf '%s  %s\n' "$(date -Is)" "$*" >> "$LOG"; }
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+log "=== verification starting ==="
+
+# ── Find the newest database dump ───────────────────────────────────────────
+newest=$(find "{{ backup_daily_dir }}" -name 'postgresql-*.dump.gz*' -type f -printf '%T@ %p\n' 2>/dev/null \
+         | sort -rn | head -1 | cut -d' ' -f2-)
+
+if [ -z "$newest" ]; then
+    echo "VERIFY FAILED: no PostgreSQL dump found under {{ backup_daily_dir }}"
+    echo "  Either backups have never run, or they have been failing silently."
+    log "FAILURE: no dump found"
+    exit 1
+fi
+
+age_hours=$(( ( $(date +%s) - $(stat -c %Y "$newest") ) / 3600 ))
+log "newest dump: $newest (${age_hours}h old)"
+
+if [ "$age_hours" -gt {{ backup_max_age_hours }} ]; then
+    echo "VERIFY WARNING: newest dump is ${age_hours}h old (limit {{ backup_max_age_hours }}h)"
+    echo "  $newest"
+    PROBLEMS=$(( PROBLEMS + 1 ))
+fi
+
+# ── Decrypt ─────────────────────────────────────────────────────────────────
+case "$newest" in
+    *.gpg)
+        if ! gpg --batch --quiet --decrypt "$newest" > "${WORK}/dump.gz" 2>>"$LOG"; then
+            echo "VERIFY FAILED: cannot decrypt $newest"
+            echo ""
+            echo "  This host does not hold the private key, deliberately — that is what"
+            echo "  stops someone who compromises it from reading every backup."
+            echo ""
+            echo "  Verification therefore has to run somewhere the private key exists."
+            echo "  Either import it here temporarily and re-run by hand, or run this"
+            echo "  script on the machine that holds it. Do NOT leave the private key"
+            echo "  installed on this host afterwards."
+            log "FAILURE: decryption failed (private key absent by design)"
+            exit 1
+        fi
+        ;;
+    *) cp "$newest" "${WORK}/dump.gz" ;;
+esac
+
+gunzip -f "${WORK}/dump.gz" 2>>"$LOG" || {
+    echo "VERIFY FAILED: $newest is not readable as gzip — the archive is corrupt"
+    log "FAILURE: gunzip failed"
+    exit 1
+}
+
+# ── Restore into a scratch database ─────────────────────────────────────────
+# On the database host, because that is where a working PostgreSQL is. The
+# scratch database is dropped first in case a previous run died halfway.
+log "restoring into ${DB} on {{ backup_verify_host }}"
+
+remote="{{ backup_user }}@{{ hostvars[backup_verify_host]['ansible_host'] | default(backup_verify_host) }}"
+
+if ! ssh $SSH_OPTS "$remote" "dropdb --if-exists ${DB} && createdb ${DB}" >>"$LOG" 2>&1; then
+    echo "VERIFY FAILED: cannot create scratch database ${DB} on {{ backup_verify_host }}"
+    echo "  The backup account needs CREATEDB there, and the forced-command key"
+    echo "  restricts it to rsync — see roles/backup/README.md."
+    log "FAILURE: could not create scratch database"
+    exit 1
+fi
+
+if ! ssh $SSH_OPTS "$remote" "pg_restore -d ${DB} --no-owner --no-privileges" \
+       < "${WORK}/dump" >>"$LOG" 2>&1; then
+    # pg_restore warns about ownership on almost every restore. A non-zero exit
+    # matters only if the table count below also comes up short.
+    log "pg_restore reported errors — checking whether the data arrived anyway"
+fi
+
+# ── Count what arrived ──────────────────────────────────────────────────────
+# The real test. A dump that restores with zero tables restored "successfully".
+tables=$(ssh $SSH_OPTS "$remote" \
+    "psql -tAc \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\" ${DB}" \
+    2>>"$LOG" | tr -d '[:space:]')
+
+log "restored ${tables:-0} tables"
+
+if [ "${tables:-0}" -lt {{ backup_verify_min_tables }} ]; then
+    echo "VERIFY FAILED: restore produced only ${tables:-0} tables (expected at least {{ backup_verify_min_tables }})"
+    echo "  The dump is truncated or empty. $newest"
+    PROBLEMS=$(( PROBLEMS + 1 ))
+fi
+
+ssh $SSH_OPTS "$remote" "dropdb --if-exists ${DB}" >>"$LOG" 2>&1
+
+log "=== verification finished: ${PROBLEMS} problem(s) ==="
+
+if [ "$PROBLEMS" -gt 0 ]; then
+    exit 1
+fi
+
+exit 0

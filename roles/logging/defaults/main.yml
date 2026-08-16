@@ -1,18 +1,112 @@
 ---
 # Defaults for the `logging` role — Phase 7.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  JOURNALD IS NOT CONFIGURED HERE.                                         │
+# │                                                                           │
+# │  The `os` role owns /etc/systemd/journald.conf.d — see os_journald_*.     │
+# │  Two roles writing one file is the collision the house rules forbid, and  │
+# │  the symptom would be a size cap that changes depending on which role ran │
+# │  last. To change journal retention, edit the `os` role's variables.       │
+# │                                                                           │
+# │  This role owns logrotate and rsyslog. That is the whole boundary.        │
+# └───────────────────────────────────────────────────────────────────────────┘
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-logging_enabled: false
+logging_packages:
+  - rsyslog
+  - logrotate
 
-# an uncapped journal fills the disk
-logging_journald_max_use: "500M"
-logging_journald_max_retention: "30day"
+# ── Logrotate defaults ──────────────────────────────────────────────────────
 logging_logrotate_frequency: daily
-logging_logrotate_rotate: 14
+logging_logrotate_rotate: 14           # two weeks
 logging_logrotate_compress: true
+logging_logrotate_delaycompress: true  # keep yesterday's readable without zcat
+logging_logrotate_notifempty: true
+logging_logrotate_dateext: true        # app.log-20261005, not app.log.1
+
+# ── Per-application rotation ────────────────────────────────────────────────
+# Only for logs written to FILES. Anything going to the journal is already
+# bounded by the os role's size cap, and a logrotate rule for it would do
+# nothing.
+#
+# Fields: name, paths, and optional overrides. `postrotate` matters: a daemon
+# holding an open file descriptor keeps writing to the rotated-away inode, so
+# the new file stays empty and the old one grows invisibly until the disk fills.
+logging_logrotate_configs:
+  - name: nginx
+    paths:
+      - /var/log/nginx/*.log
+    owner: www-data
+    group: adm
+    mode: "0640"
+    rotate: 30                          # access logs are the incident record
+    sharedscripts: true
+    postrotate: "[ -f /run/nginx.pid ] && kill -USR1 $(cat /run/nginx.pid) || true"
+    when: "'web' in group_names"
+
+  - name: jengasec
+    paths:
+      - "{{ app_log_dir | default('/var/log/jengasec') }}/*.log"
+    owner: "{{ app_user | default('jengasec') }}"
+    group: adm
+    mode: "0640"
+    rotate: 30
+    sharedscripts: true
+    # gunicorn logs to the journal, so nothing needs signalling. Django's own
+    # file logger, if the platform adds one, reopens on next write.
+    postrotate: ""
+    when: "'web' in group_names"
+
+  - name: postgresql
+    paths:
+      - /var/log/postgresql/*.log
+    owner: postgres
+    group: adm
+    mode: "0640"
+    rotate: 30
+    sharedscripts: false
+    # PostgreSQL's own logging_collector already rotates by age and size. This
+    # rule is a backstop that compresses and expires what the collector leaves.
+    postrotate: ""
+    when: "'database' in group_names"
+
+  - name: redis
+    paths:
+      - /var/log/redis/*.log
+    owner: redis
+    group: adm
+    mode: "0640"
+    rotate: 7
+    sharedscripts: false
+    postrotate: "[ -f /run/redis/redis-server.pid ] && kill -USR1 $(cat /run/redis/redis-server.pid) || true"
+    when: "'database' in group_names"
+
+# ── rsyslog ─────────────────────────────────────────────────────────────────
+logging_rsyslog_enabled: true
+
+# Auth events into their own file. journalctl has them too, but a plain file
+# survives journal rotation and is straightforward to hand to whoever reviews an
+# incident — and to feed to fail2ban if the journal backend ever misbehaves.
+logging_separate_auth_log: true
+logging_auth_log: /var/log/auth.log
+
+# ── Remote forwarding ───────────────────────────────────────────────────────
+# Off. Worth enabling before the competition if a collector exists: logs on a
+# compromised host are evidence an attacker can edit, and the whole point of
+# shipping them elsewhere is that they cannot.
+#
+# @@ is TCP, @ is UDP. Use TCP — UDP silently drops under load, which is exactly
+# when the log matters.
 logging_remote_enabled: false
 logging_remote_host: ""
+logging_remote_port: 514
+logging_remote_protocol: tcp
+
+# Queue to disk if the collector is unreachable, so a network blip does not lose
+# events. Without this rsyslog buffers in memory and discards when full.
+logging_remote_queue_enabled: true
+logging_remote_queue_max_disk: "1g"
+
+# ── Log directory permissions ───────────────────────────────────────────────
+# 0750 root:adm. Members of adm can read logs without sudo; nobody else can.
+logging_dir_mode: "0750"

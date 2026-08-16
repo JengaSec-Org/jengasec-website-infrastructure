@@ -1,39 +1,131 @@
 ---
 # logging — Phase 7
-# Journal retention, logrotate, and syslog forwarding.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Cap journald size and retention
-#   - Logrotate policies for nginx, gunicorn, and PostgreSQL
-#   - Forward to a central collector (Loki, Graylog, or ELK) later
-#   - Keep audit logs on a separate rotation from application logs
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Owns logrotate and rsyslog. Journald belongs to the `os` role — see the note
+# at the top of defaults/main.yml.
 
-- name: Refuse to run — the logging role is not implemented yet
-  ansible.builtin.fail:
+- name: Install logging packages
+  ansible.builtin.apt:
+    name: "{{ logging_packages }}"
+    state: present
+  tags: [logging, packages]
+
+# ── Logrotate ───────────────────────────────────────────────────────────────
+
+# There is deliberately no shared "defaults" file in /etc/logrotate.d.
+#
+# Global directives in an included file apply to every file logrotate reads
+# AFTER it, in alphabetical order — so a 00- file silently changes the behaviour
+# of Debian's own rules for apt, dpkg and the rest. Each rule below is
+# self-contained instead: more repetition in the template, no action at a
+# distance.
+
+# `when` on each entry keeps the database rules off the web host and vice versa.
+# A logrotate rule naming a path that never exists is not an error, but it is
+# noise in a directory someone will read during an incident.
+- name: Write per-application logrotate rules
+  ansible.builtin.template:
+    src: logrotate-app.j2
+    dest: "/etc/logrotate.d/jengasec-{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ logging_logrotate_configs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.when is not defined or (item.when | bool)
+  tags: [logging, logrotate]
+
+- name: Remove rules that do not apply to this host
+  ansible.builtin.file:
+    path: "/etc/logrotate.d/jengasec-{{ item.name }}"
+    state: absent
+  loop: "{{ logging_logrotate_configs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - item.when is defined
+    - not (item.when | bool)
+  tags: [logging, logrotate]
+
+# --debug parses every rule and reports what it WOULD do without touching a
+# file. A syntax error in one file makes logrotate skip that file silently on
+# its real run, so nothing rotates and nobody notices until the disk is full.
+- name: Validate the logrotate configuration
+  ansible.builtin.command:
+    cmd: logrotate --debug /etc/logrotate.conf
+  register: logging_logrotate_check
+  changed_when: false
+  failed_when: logging_logrotate_check.rc != 0
+  tags: [logging, logrotate, verify]
+
+# ── rsyslog ─────────────────────────────────────────────────────────────────
+
+- name: Write the JengaSec rsyslog rules
+  ansible.builtin.template:
+    src: rsyslog-jengasec.conf.j2
+    dest: /etc/rsyslog.d/50-jengasec.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: logging_rsyslog_enabled | bool
+  notify: Restart rsyslog
+  tags: [logging, rsyslog]
+
+- name: Validate the rsyslog configuration
+  ansible.builtin.command:
+    cmd: rsyslogd -N1
+  register: logging_rsyslog_check
+  changed_when: false
+  failed_when: logging_rsyslog_check.rc != 0
+  when: logging_rsyslog_enabled | bool
+  tags: [logging, rsyslog, verify]
+
+- name: Enable and start rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog
+    enabled: true
+    state: started
+  when: logging_rsyslog_enabled | bool
+  tags: [logging, rsyslog, service]
+
+# ── Permissions ─────────────────────────────────────────────────────────────
+
+# 0750 root:adm — members of adm read logs without sudo, nobody else can. The
+# `filesystem-security` role enforces the same idea on /etc; this covers the
+# application's own directory.
+- name: Secure the log directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: adm
+    mode: "{{ logging_dir_mode }}"
+  loop:
+    - /var/log
+  tags: [logging, permissions]
+
+- name: Apply pending logging changes
+  ansible.builtin.meta: flush_handlers
+  tags: [logging]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Check disk usage under /var/log
+  ansible.builtin.command:
+    cmd: du -sh /var/log
+  register: logging_disk
+  changed_when: false
+  failed_when: false
+  tags: [logging, verify]
+
+- name: Report log disk usage
+  ansible.builtin.debug:
     msg: >-
-      The 'logging' role is a Phase 7 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/logging/README.md.
-  when: not logging_enabled | bool
-  tags:
-    - logging
-    - stub
-
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install logging
-#   ansible.builtin.apt:
-#     name: "{{ logging_packages }}"
-#     state: present
-#   when: logging_enabled | bool
-#   notify: Restart logging
+      /var/log uses {{ (logging_disk.stdout | default('?')).split()[0] }}.
+      Journal size is capped separately by the `os` role
+      (os_journald_max_use = {{ os_journald_max_use | default('500M') }}).
+      {{ 'Remote forwarding is OFF — logs on a compromised host are evidence an
+          attacker can edit.' if not (logging_remote_enabled | bool) else
+         'Forwarding to ' ~ logging_remote_host }}
+  tags: [logging, verify]

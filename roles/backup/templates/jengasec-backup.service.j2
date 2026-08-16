@@ -1,0 +1,46 @@
+# {{ common_managed_banner }}
+#
+# The nightly backup. Started by jengasec-backup.timer.
+
+[Unit]
+Description=JengaSec backup
+Documentation=file:///usr/local/sbin/jengasec-backup
+After=network-online.target
+Wants=network-online.target
+
+# Do not start a second run while one is still going. A long rsync overlapping
+# the next night's timer would have two jobs writing the same dated directory.
+OnFailure=jengasec-backup-failed.service
+
+[Service]
+Type=oneshot
+User={{ backup_user }}
+Group={{ backup_group }}
+ExecStart=/usr/local/sbin/jengasec-backup
+
+# Backups are IO-heavy and nothing waits on them. Yielding to anything
+# interactive means a backup running late never slows the platform down.
+Nice=10
+IOSchedulingClass=idle
+
+# Generous: a first run pulling the whole media directory over the LAN is slow,
+# and a timeout that kills it halfway leaves a partial dated directory that
+# looks like a real backup.
+TimeoutStartSec=4h
+
+# ── Sandboxing ──────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ backup_root }} {{ backup_log_dir }} /home/{{ backup_user }}
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jengasec-backup

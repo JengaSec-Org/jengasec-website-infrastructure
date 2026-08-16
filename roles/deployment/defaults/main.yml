@@ -1,19 +1,78 @@
 ---
 # Defaults for the `deployment` role — Phase 7.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# Ships a new revision onto a platform that already exists.
+#
+# Distinct from the `django` role: that one BUILDS the platform — checkout,
+# virtualenv, units, first migration. This one ships a change to a running
+# system, and cares about things `django` does not: what was running before,
+# whether the new version actually works, and how to get back.
+#
+# This is the playbook that runs most often, so it has to be boring and
+# reversible.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-deployment_enabled: false
-
-# set to a tag or SHA for a repeatable release
+# ── What to deploy ──────────────────────────────────────────────────────────
+# A tag or commit SHA for a repeatable release. HEAD is convenient and means
+# "whatever main happens to be" — fine mid-development, wrong the week of the
+# competition, where you want to know exactly what is running.
 deployment_revision: HEAD
-deployment_keep_releases: 3
-deployment_healthcheck_url: "https://platform.{{ jengasec_domain }}/"
+deployment_branch: "{{ app_repo_branch | default('main') }}"
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+deployment_source_dir: "{{ app_source_dir | default('/opt/jengasec/app') }}"
+deployment_venv_dir: "{{ app_venv_dir | default('/opt/jengasec/venv') }}"
+deployment_user: "{{ app_user | default('jengasec') }}"
+deployment_state_dir: "{{ app_root | default('/opt/jengasec') }}/.deploy"
+
+# ── Steps ───────────────────────────────────────────────────────────────────
+deployment_install_requirements: true
+deployment_run_migrations: true
+deployment_collectstatic: true
+
+# ── Health check ────────────────────────────────────────────────────────────
+# /healthz/ runs SELECT 1 and returns 200 or 503.
+#
+# Checking / instead would be nearly worthless: it is a TemplateView touching no
+# database, so it returns 200 with PostgreSQL completely down — and a health
+# check that passes while the application cannot serve a single real page is
+# worse than none, because it creates confidence.
+deployment_healthcheck_enabled: true
+deployment_healthcheck_url: "https://{{ nginx_server_name | default('platform.' ~ (jengasec_domain | default('jengasec.local'))) }}/healthz/"
 deployment_healthcheck_retries: 5
 deployment_healthcheck_delay: 5
+deployment_healthcheck_timeout: 15
+deployment_healthcheck_validate_certs: false     # internal CA
+
+# ── Rollback ────────────────────────────────────────────────────────────────
+# On a failed health check, check the previous revision back out and reload.
+#
+# It restores CODE, not the DATABASE. A migration that ran cannot be undone by
+# this role, and rolling code back past a migration usually breaks worse than
+# the thing you were fixing. See the README before relying on it.
 deployment_rollback_on_failure: true
-# serve a holding page during the release
-deployment_maintenance_page: true
+
+# ── Maintenance page ────────────────────────────────────────────────────────
+# Off by default. A deployment here is a gunicorn reload — a pause of a second
+# or two, with requests queued on the socket rather than refused. A maintenance
+# page would be more disruptive than the thing it covers.
+#
+# Worth enabling for a deployment with a long migration, where the pause is
+# minutes rather than seconds.
+deployment_maintenance_page: false
+deployment_maintenance_file: /var/www/html/maintenance.html
+
+# ── Release history ─────────────────────────────────────────────────────────
+# How many past revisions to record. Not checkouts — this is a git repository,
+# so the revisions are already there; this is just the log of what was deployed
+# when, which is the thing you want during an incident.
+deployment_keep_releases: 10
+
+# ── Safety ──────────────────────────────────────────────────────────────────
+# Refuse to deploy when the working tree has uncommitted changes. Someone
+# hot-fixed something on the server; deploying over it destroys the fix and the
+# evidence of what was wrong.
+deployment_refuse_if_dirty: true
+
+# Announce the deployment in the journal, so `journalctl` during an incident
+# shows a deployment happening right before things changed.
+deployment_log_to_journal: true

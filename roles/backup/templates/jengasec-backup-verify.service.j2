@@ -1,0 +1,35 @@
+# {{ common_managed_banner }}
+#
+# Monthly restore verification. Started by jengasec-backup-verify.timer.
+#
+# Restores the newest dump into a scratch database, counts the tables, drops it.
+# This is what turns "we have backups" from an assumption into a fact.
+
+[Unit]
+Description=JengaSec backup restore verification
+Documentation=file:///usr/local/sbin/jengasec-backup-verify
+After=network-online.target
+Wants=network-online.target
+OnFailure=jengasec-backup-failed.service
+
+[Service]
+Type=oneshot
+User={{ backup_user }}
+Group={{ backup_group }}
+ExecStart=/usr/local/sbin/jengasec-backup-verify
+
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ backup_root }} {{ backup_log_dir }} /home/{{ backup_user }}
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jengasec-backup-verify

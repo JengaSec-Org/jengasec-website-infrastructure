@@ -1,0 +1,13 @@
+---
+# Every lab host Prometheus scrapes.
+
+firewall_rules_group:
+  - port: "{{ node_exporter_port | default(9100) }}"
+    proto: tcp
+    from: "192.168.56.13"
+    comment: "node_exporter — scraped by server3 only"
+
+# Bind to this host's own host-only address rather than 0.0.0.0. Same reasoning
+# as production: node_exporter publishes a full inventory of the machine with
+# no authentication.
+node_exporter_bind: "{{ ansible_host | default('127.0.0.1') }}"

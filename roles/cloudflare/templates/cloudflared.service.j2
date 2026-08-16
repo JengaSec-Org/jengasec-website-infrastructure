@@ -1,0 +1,79 @@
+# {{ common_managed_banner }}
+#
+# Cloudflare Tunnel for {{ cloudflare_public_hostname }}.
+#
+# A templated unit rather than `cloudflared service install`, so it matches the
+# rest of the repository, points at our config path, and carries the same
+# sandboxing as every other service here.
+
+[Unit]
+Description=Cloudflare Tunnel — JengaSec
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+After=network-online.target nginx.service
+Wants=network-online.target
+
+# Ordering only, not a requirement. If nginx is down the tunnel still registers
+# and returns 502 — which is better than the tunnel refusing to start, because
+# then at least Cloudflare's error page appears rather than a DNS failure.
+After=nginx.service
+
+[Service]
+Type=notify
+User={{ cloudflare_user }}
+Group={{ cloudflare_group }}
+
+# The token identifies which tunnel this is. On the command line rather than in
+# config.yml so the token file can stay 0600 while the config stays readable
+# for debugging.
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config {{ cloudflare_config_dir }}/config.yml tunnel run --token-file {{ cloudflare_config_dir }}/token
+
+Restart=always
+RestartSec=5
+
+# A tunnel that cannot reach Cloudflare will retry forever, which is correct —
+# a campus network blip should not need a human. But cap the restart rate so a
+# genuinely broken config does not fill the journal.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# ── Sandboxing ──────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# It writes nothing. Everything it needs is read-only.
+ReadWritePaths=
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# QUIC over UDP by default, falling back to HTTP/2 over TCP.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallArchitectures=native
+
+TasksMax=128
+MemoryMax=256M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflared
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,56 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# Remove temporary files older than {{ cron_tmp_cleanup_age_days }} days.
+#
+# Document parsing (PyMuPDF, pdfplumber) writes temporary files. A crashed parse
+# leaves them behind, and on the web host they accumulate in the same filesystem
+# as the uploads.
+#
+# Deliberately conservative: only regular files, only ones untouched for
+# {{ cron_tmp_cleanup_age_days }} days, and never anything under a path this script does not own.
+# Silence means nothing needed removing.
+
+set -uo pipefail
+
+AGE_DAYS={{ cron_tmp_cleanup_age_days }}
+REMOVED=0
+
+PATHS=(
+{% for path in cron_tmp_cleanup_paths %}
+    "{{ path }}"
+{% endfor %}
+)
+
+for dir in "${PATHS[@]}"; do
+    [ -d "$dir" ] || continue
+
+    # -xdev keeps find on one filesystem, so a mount under /tmp is never
+    # descended into.
+    #
+    # -type f only: directories are left alone. An empty directory costs
+    # nothing, and removing one that a running process expects to exist is a
+    # much worse outcome than leaving it.
+    #
+    # -atime: not accessed in AGE_DAYS. A file being read still counts as in
+    # use, which matters for a long-running parse.
+    count=$(find "$dir" -xdev -type f -atime "+${AGE_DAYS}" \
+                 -not -path '*/systemd-private-*' \
+                 -not -path '*/.X11-unix/*' \
+                 -not -name '.*' \
+                 -print 2>/dev/null | wc -l)
+
+    if [ "$count" -gt 0 ]; then
+        find "$dir" -xdev -type f -atime "+${AGE_DAYS}" \
+             -not -path '*/systemd-private-*' \
+             -not -path '*/.X11-unix/*' \
+             -not -name '.*' \
+             -delete 2>/dev/null
+        echo "Removed $count file(s) older than ${AGE_DAYS} days from $dir"
+        REMOVED=$(( REMOVED + count ))
+    fi
+done
+
+# systemd-tmpfiles handles /tmp on Debian by default; this script covers the
+# cases its rules miss and anything the application leaves outside them.
+exit 0

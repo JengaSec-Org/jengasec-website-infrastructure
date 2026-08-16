@@ -1,0 +1,38 @@
+# {{ common_managed_banner }}
+#
+# Log rotation for {{ item.name }} on {{ inventory_hostname }}.
+
+{{ item.paths | join('\n') }} {
+    {{ item.frequency | default(logging_logrotate_frequency) }}
+    rotate {{ item.rotate | default(logging_logrotate_rotate) }}
+    missingok
+    notifempty
+{% if logging_logrotate_compress %}
+    compress
+    delaycompress
+{% endif %}
+{% if logging_logrotate_dateext %}
+    dateext
+    dateformat -%Y%m%d
+{% endif %}
+
+    # Recreate the file immediately with the same ownership, so the daemon can
+    # keep writing without waiting to be signalled.
+    create {{ item.mode | default('0640') }} {{ item.owner | default('root') }} {{ item.group | default('adm') }}
+{% if item.sharedscripts | default(false) %}
+
+    # Run postrotate ONCE for the whole set rather than per file. Without this,
+    # a wildcard matching five files signals the daemon five times.
+    sharedscripts
+{% endif %}
+{% if item.postrotate | default('') | length > 0 %}
+
+    # A daemon holding an open file descriptor keeps writing to the rotated-away
+    # inode. The new file stays empty, the old one grows invisibly, and the disk
+    # fills with a file that `ls` no longer shows in the expected place. This is
+    # the line that prevents that.
+    postrotate
+        {{ item.postrotate }}
+    endscript
+{% endif %}
+}

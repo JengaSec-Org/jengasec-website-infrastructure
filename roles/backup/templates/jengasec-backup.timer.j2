@@ -1,0 +1,29 @@
+# {{ common_managed_banner }}
+#
+# Nightly at {{ backup_schedule }}.
+#
+# A timer rather than cron, for one reason above all: Persistent=true.
+
+[Unit]
+Description=JengaSec nightly backup
+Documentation=file:///usr/local/sbin/jengasec-backup
+
+[Timer]
+OnCalendar=*-*-* {{ backup_schedule }}
+
+# THE reason this is a timer and not a cron job.
+#
+# If the host was down at {{ backup_schedule }}, systemd runs the backup as soon as it
+# comes back. cron would simply skip the night — and the nights a server is
+# down are exactly the nights you most want a backup afterwards.
+Persistent=true
+
+# Spread the start so the backup does not begin at the same instant as every
+# other scheduled job on the network.
+RandomizedDelaySec={{ backup_schedule_randomized_delay }}
+
+# Do not start another run if the previous one is still going.
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

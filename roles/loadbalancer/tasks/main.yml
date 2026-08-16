@@ -1,41 +1,143 @@
 ---
-# loadbalancer — Phase 6
-# HAProxy or nginx load balancing across application hosts.
+# loadbalancer — Phase 6. HAProxy.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Reverse proxy to multiple backends
-#   - Round-robin and least-connections algorithms
-#   - Active health checks with backend ejection
-#   - Sticky sessions for the judging workflow
-#   - TLS offloading
-#   - Stats endpoint, restricted to the LAN
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# A DEDICATED load balancing tier in front of several nginx hosts. nginx already
+# balances Django traffic on its own — read the banner in defaults/main.yml
+# before enabling this.
 
-- name: Refuse to run — the loadbalancer role is not implemented yet
-  ansible.builtin.fail:
+- name: Report that the load balancer tier is disabled
+  ansible.builtin.debug:
     msg: >-
-      The 'loadbalancer' role is a Phase 6 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/loadbalancer/README.md.
-  when: not loadbalancer_enabled | bool
-  tags:
-    - loadbalancer
-    - stub
+      loadbalancer_enabled is false, so no HAProxy tier is deployed on
+      {{ inventory_hostname }}. This is almost certainly correct: nginx already
+      load balances Django traffic across nginx_upstream_servers. This role is
+      only for a dedicated tier in front of SEVERAL nginx hosts.
+      See roles/loadbalancer/README.md.
+  when: not (loadbalancer_enabled | bool)
+  tags: [loadbalancer, always]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install loadbalancer
-#   ansible.builtin.apt:
-#     name: "{{ loadbalancer_packages }}"
-#     state: present
-#   when: loadbalancer_enabled | bool
-#   notify: Restart loadbalancer
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+# Both want 80 and 443. Whichever starts second does not, and the failure is a
+# systemd bind error that does not mention the other service.
+- name: Refuse to run alongside nginx
+  ansible.builtin.assert:
+    that:
+      - "'web' not in group_names"
+    fail_msg: >-
+      {{ inventory_hostname }} is in the `web` group, which runs nginx on ports
+      80 and 443. HAProxy wants the same ports and whichever starts second will
+      fail to bind. A dedicated load balancer belongs on its own host.
+    success_msg: "Not a web host — safe to bind 80 and 443"
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, always]
+
+- name: Assert backends are defined
+  ansible.builtin.assert:
+    that:
+      - loadbalancer_backends | length > 0
+    fail_msg: >-
+      loadbalancer_enabled is true but loadbalancer_backends is empty. HAProxy
+      would start with a backend containing no servers and return 503 to
+      everything.
+    success_msg: "{{ loadbalancer_backends | length }} backend(s) configured"
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, always]
+
+- name: Warn about an unauthenticated stats page
+  ansible.builtin.debug:
+    msg: >-
+      loadbalancer_stats_enabled is true but no password is set. The stats page
+      shows every backend, its health, and its traffic — a complete map of the
+      infrastructure. Set vault_haproxy_stats_password, or disable the page.
+  when:
+    - loadbalancer_enabled | bool
+    - loadbalancer_stats_enabled | bool
+    - loadbalancer_stats_password | default('') | length == 0
+  tags: [loadbalancer, always]
+
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Install HAProxy
+  ansible.builtin.apt:
+    name: "{{ loadbalancer_packages }}"
+    state: present
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, packages]
+
+# HAProxy wants the certificate and its private key concatenated in ONE file,
+# unlike nginx which takes them separately. Building it here rather than
+# expecting the certificates role to produce a HAProxy-shaped artefact keeps
+# that role format-agnostic.
+- name: Build the combined certificate and key
+  ansible.builtin.shell:
+    cmd: >-
+      cat /etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt
+          /etc/ssl/jengasec/private/{{ inventory_hostname }}.key
+      > {{ loadbalancer_ssl_certificate }}
+  args:
+    executable: /bin/bash
+    creates: "{{ loadbalancer_ssl_certificate }}"
+  when: loadbalancer_enabled | bool
+  notify: Reload haproxy
+  tags: [loadbalancer, tls]
+
+# Contains the private key.
+- name: Secure the combined certificate
+  ansible.builtin.file:
+    path: "{{ loadbalancer_ssl_certificate }}"
+    owner: root
+    group: root
+    mode: "0400"
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, tls]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+- name: Write the HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ loadbalancer_config_file }}"
+    owner: root
+    group: root
+    mode: "0640"
+    backup: true
+    validate: "haproxy -c -f %s"
+  when: loadbalancer_enabled | bool
+  notify: Reload haproxy
+  tags: [loadbalancer, config]
+
+- name: Enable and start HAProxy
+  ansible.builtin.systemd:
+    name: "{{ loadbalancer_service_name }}"
+    enabled: true
+    state: started
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, service]
+
+- name: Apply pending HAProxy changes
+  ansible.builtin.meta: flush_handlers
+  tags: [loadbalancer]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Read back the backend status
+  ansible.builtin.shell:
+    cmd: >-
+      echo "show stat" | socat stdio /run/haproxy/admin.sock 2>/dev/null
+      | cut -d, -f1,2,18 || true
+  args:
+    executable: /bin/bash
+  register: loadbalancer_stat
+  changed_when: false
+  failed_when: false
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, verify]
+
+- name: Report backend health
+  ansible.builtin.debug:
+    msg: >-
+      {{ loadbalancer_stat.stdout_lines | default(['socat not installed — check
+      the stats page instead']) }}
+  when: loadbalancer_enabled | bool
+  tags: [loadbalancer, verify]

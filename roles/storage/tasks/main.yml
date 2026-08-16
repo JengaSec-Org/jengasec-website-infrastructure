@@ -1,39 +1,185 @@
 ---
 # storage — Phase 8
-# Filesystem layout, mount points, and permissions for application data.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Create and own the media, static, and log directories
-#   - Mount additional volumes from storage_mounts
-#   - Enforce quotas where a directory could fill the disk
-#   - Set the retention policy for uploaded submissions
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Mount points, fstab entries, disk guards. Nothing else — see the banner in
+# defaults/main.yml for where the boundary is and why.
 
-- name: Refuse to run — the storage role is not implemented yet
-  ansible.builtin.fail:
+- name: Report that storage management is disabled
+  ansible.builtin.debug:
     msg: >-
-      The 'storage' role is a Phase 8 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/storage/README.md.
-  when: not storage_enabled | bool
-  tags:
-    - storage
-    - stub
+      storage_enabled is false. On three servers with local disks there is
+      nothing to mount, so this is a no-op either way — but disk usage is still
+      reported below, and the `cron` role checks it on a schedule.
+  when: not (storage_enabled | bool)
+  tags: [storage, always]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install storage
-#   ansible.builtin.apt:
-#     name: "{{ storage_packages }}"
-#     state: present
-#   when: storage_enabled | bool
-#   notify: Restart storage
+- name: Install storage tooling
+  ansible.builtin.apt:
+    name: "{{ storage_packages }}"
+    state: present
+  when:
+    - storage_enabled | bool
+    - storage_mounts | length > 0
+  tags: [storage, packages]
+
+# ── Mount points ────────────────────────────────────────────────────────────
+
+- name: Create the mount point directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ storage_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: storage_enabled | bool
+  tags: [storage, mounts]
+
+# Mounting over a directory that already has files in it makes them vanish from
+# view. They are still on the underlying filesystem, still taking up space, and
+# they reappear only when it is unmounted — which nobody thinks to try, because
+# the symptom is "the uploads are gone".
+- name: Check the mount points are empty
+  ansible.builtin.find:
+    paths: "{{ item.path }}"
+    file_type: any
+  loop: "{{ storage_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: storage_mountpoint_contents
+  when:
+    - storage_enabled | bool
+    - storage_refuse_nonempty_mountpoint | bool
+  tags: [storage, mounts]
+
+- name: Refuse to mount over existing files
+  ansible.builtin.assert:
+    that:
+      - (item.matched | default(0)) == 0 or
+        (item.item.path in (ansible_mounts | map(attribute='mount') | list))
+    fail_msg: >-
+      {{ item.item.path }} already contains {{ item.matched }} file(s) and is
+      not currently a mount point. Mounting over it would hide them — they stay
+      on the underlying filesystem consuming space, and reappear only on
+      unmount. Move them aside first, or set
+      storage_refuse_nonempty_mountpoint: false if hiding them is intended.
+    quiet: true
+  loop: "{{ storage_mountpoint_contents.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.path | default('?') }}"
+  when:
+    - storage_enabled | bool
+    - storage_refuse_nonempty_mountpoint | bool
+    - item.matched is defined
+  tags: [storage, mounts]
+
+# state: mounted both mounts it now and writes the fstab entry, so it survives a
+# reboot. state: present would write fstab without mounting — which looks fine
+# until the next boot, when it is suddenly the only thing that worked.
+- name: Configure the mounts
+  ansible.posix.mount:
+    src: "{{ item.src }}"
+    path: "{{ item.path }}"
+    fstype: "{{ item.fstype | default('ext4') }}"
+    opts: "{{ item.opts | default(storage_default_mount_opts) }}"
+    state: "{{ item.state | default('mounted') }}"
+  loop: "{{ storage_mounts }}"
+  loop_control:
+    label: "{{ item.path }} <- {{ item.src }}"
+  when: storage_enabled | bool
+  tags: [storage, mounts]
+
+# Device names are not stable: add a disk and yesterday's /dev/sdb becomes
+# /dev/sdc. At boot the wrong filesystem mounts over the media directory, or
+# nothing mounts and the application writes to the root disk instead.
+- name: Warn about unstable device names in fstab
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.path }} is mounted from '{{ item.src }}', a device path. Device
+      names change when disks are added or reordered. Use UUID= or LABEL=
+      instead — find it with: blkid {{ item.src }}
+  loop: "{{ storage_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when:
+    - storage_enabled | bool
+    - item.src is match('^/dev/')
+  tags: [storage, mounts]
+
+# ── Quotas ──────────────────────────────────────────────────────────────────
+
+# Quotas are per FILESYSTEM, not per directory. Enabling this without a
+# dedicated volume for media applies the limit to the whole root filesystem,
+# which is emphatically not what anyone intends.
+- name: Refuse quotas without a dedicated filesystem
+  ansible.builtin.assert:
+    that:
+      - storage_quota_mount in (ansible_mounts | map(attribute='mount') | list)
+    fail_msg: >-
+      storage_quota_enabled is true but {{ storage_quota_mount }} is not its own
+      mount point. Quotas apply per filesystem — this would limit the whole
+      filesystem it sits on, probably the root disk. Give media its own volume
+      via storage_mounts first.
+    success_msg: "{{ storage_quota_mount }} is a separate filesystem"
+  when:
+    - storage_enabled | bool
+    - storage_quota_enabled | bool
+  tags: [storage, quota]
+
+- name: Set the media quota
+  ansible.builtin.command:
+    cmd: >-
+      setquota -u {{ storage_quota_user }}
+      {{ storage_quota_soft_mb * 1024 }} {{ storage_quota_hard_mb * 1024 }}
+      0 0 {{ storage_quota_mount }}
+  register: storage_setquota
+  changed_when: storage_setquota.rc == 0
+  failed_when: false
+  when:
+    - storage_enabled | bool
+    - storage_quota_enabled | bool
+  tags: [storage, quota]
+
+# ── Disk usage ──────────────────────────────────────────────────────────────
+# Reported on every run, whether or not the role is otherwise enabled. This is
+# the failure most likely to take a small server down, and three overlapping
+# checks on it — here, in `cron`, in Prometheus — is not excessive.
+
+- name: Read disk usage
+  ansible.builtin.shell:
+    cmd: "df -PT {{ item }} 2>/dev/null | awk 'NR==2 {print $6}' | tr -d '%'"
+  args:
+    executable: /bin/bash
+  loop: "{{ storage_check_paths }}"
+  loop_control:
+    label: "{{ item }}"
+  register: storage_usage
+  changed_when: false
+  failed_when: false
+  tags: [storage, verify]
+
+- name: Report filesystems above the threshold
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }} is {{ item.stdout | default('?') }}% full — above the
+      {{ storage_warn_percent }}% threshold.
+      {{ 'On server3 this filesystem also holds every backup AND the Prometheus
+          database.' if 'backup' in group_names else '' }}
+  loop: "{{ storage_usage.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('?') }}"
+  when:
+    - item.stdout is defined
+    - item.stdout | trim | length > 0
+    - (item.stdout | trim | int) >= (storage_warn_percent | int)
+  tags: [storage, verify]
+
+- name: Report the mounted filesystems
+  ansible.builtin.debug:
+    msg: >-
+      {% for m in ansible_mounts | sort(attribute='mount') %}
+      {{ m.mount }} {{ (m.size_total / 1073741824) | round(1) }}G
+      ({{ (100 - (m.size_available / m.size_total * 100)) | round(0) | int }}% used);
+      {% endfor %}
+  when: ansible_mounts is defined
+  tags: [storage, verify]

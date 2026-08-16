@@ -1,13 +1,19 @@
 ---
 # Handlers for the `cloudflare` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
-- name: Restart cloudflare
+- name: Reload systemd for cloudflared
   ansible.builtin.systemd:
-    name: "{{ cloudflare_service_name | default('cloudflare') }}"
-    state: restarted
     daemon_reload: true
-  listen: "restart cloudflare"
-  when: cloudflare_enabled | bool
+  listen: "reload systemd for cloudflared"
+
+# Restart, not reload — cloudflared has no config reload signal.
+#
+# The gap is brief and mostly invisible: Cloudflare holds requests for a few
+# seconds while the tunnel reconnects, and with ha-connections the edge still
+# has other connections to this host during a rolling restart. A visitor sees a
+# pause, not an error.
+- name: Restart cloudflared
+  ansible.builtin.systemd:
+    name: "{{ cloudflare_service_name }}"
+    state: restarted
+  listen: "restart cloudflared"

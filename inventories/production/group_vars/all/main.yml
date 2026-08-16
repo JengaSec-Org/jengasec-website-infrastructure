@@ -13,7 +13,20 @@
 
 # ── Identity ────────────────────────────────────────────────────────────────
 jengasec_org: "Strathmore Cybersecurity Club"
+# The INTERNAL name, served by Bind9 on the competition LAN.
 jengasec_domain: jengasec.local          # TODO: replace if you use a real domain
+
+# The PUBLIC name, served through the Cloudflare Tunnel.
+#
+# Split-horizon: both names reach the same platform. On campus, Bind9 resolves
+# the .local name and traffic goes straight to nginx. Off campus, Cloudflare
+# resolves the public name and traffic arrives through the tunnel.
+#
+# This MUST be a real domain in a zone you control. Cloudflare cannot serve
+# .local — it is reserved for mDNS — and the cloudflare role refuses to start
+# with one, because the failure at Cloudflare's end is opaque.
+jengasec_public_domain: jengasec.example   # TODO: replace with your real domain
+
 jengasec_environment: production
 
 # The competition LAN. Used by the firewall (trusted sources), Bind9 (recursion

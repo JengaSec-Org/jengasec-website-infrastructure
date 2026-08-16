@@ -1,13 +1,36 @@
 ---
 # Handlers for the `monitoring` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
-- name: Restart monitoring
+- name: Restart node_exporter
   ansible.builtin.systemd:
-    name: "{{ monitoring_service_name | default('monitoring') }}"
+    name: "{{ node_exporter_service }}"
     state: restarted
-    daemon_reload: true
-  listen: "restart monitoring"
-  when: monitoring_enabled | bool
+  listen: "restart node_exporter"
+
+# POST /-/reload rather than a service restart. A restart interrupts scraping
+# and leaves a gap in every graph; a reload re-reads the config and the rules
+# with no gap at all.
+#
+# Needs --web.enable-lifecycle, which prometheus-defaults sets.
+- name: Reload prometheus
+  ansible.builtin.uri:
+    url: "http://{{ prometheus_bind }}:{{ prometheus_port }}/-/reload"
+    method: POST
+    status_code: [200]
+    timeout: 15
+  listen: "reload prometheus"
+  failed_when: false      # not yet running on the very first pass
+
+# Only for the daemon flags in /etc/default, which are read at startup — a
+# reload cannot change the retention or the listen address.
+- name: Restart prometheus
+  ansible.builtin.systemd:
+    name: "{{ prometheus_service }}"
+    state: restarted
+  listen: "restart prometheus"
+
+- name: Restart grafana
+  ansible.builtin.systemd:
+    name: "{{ grafana_service }}"
+    state: restarted
+  listen: "restart grafana"

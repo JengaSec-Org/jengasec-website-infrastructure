@@ -1,0 +1,168 @@
+---
+# cloudflare — Access policy on /admin/
+#
+# An identity check at Cloudflare's edge, BEFORE a request reaches Django.
+#
+# /admin/ controls every score in the competition. With the platform on the
+# internet, Django's login form is otherwise the only thing between an attacker
+# and the scoring data. Access means a stolen password alone is not enough.
+#
+# Policies live at Cloudflare, not on this server — but they are API-manageable,
+# so they are created here rather than left as a dashboard chore nobody does.
+
+- name: Refuse to configure Access without API credentials
+  ansible.builtin.assert:
+    that:
+      - cloudflare_api_token | length > 20
+      - cloudflare_account_id | length > 0
+    fail_msg: |
+      cloudflare_access_enabled is true but the API credentials are missing.
+      Add to your vault:
+        vault_cloudflare_api_token   — needs Access: Apps and Policies: Edit.
+                                       This is a DIFFERENT token from the tunnel
+                                       token; the tunnel one has no Access rights.
+        vault_cloudflare_account_id  — Cloudflare dashboard, right-hand sidebar.
+
+      Or create the policy by hand and set cloudflare_access_enabled: false:
+        Zero Trust > Access > Applications > Add an application
+          Type:     Self-hosted
+          Domain:   {{ cloudflare_public_hostname }}
+          Path:     admin
+          Policy:   Allow · Emails ending in @{{ cloudflare_access_allowed_email_domain }}
+
+      Leaving /admin/ on the public internet behind only a Django password is a
+      choice worth making deliberately, not by omission.
+    success_msg: "Access API credentials present"
+  no_log: true
+  tags: [cloudflare, access]
+
+- name: Assert someone will be allowed in
+  ansible.builtin.assert:
+    that:
+      - (cloudflare_access_allowed_emails | length > 0) or
+        (cloudflare_access_allowed_email_domain | length > 0)
+    fail_msg: >-
+      Access would be created with no allow rule, which locks EVERYONE out of
+      /admin/ — including you, and including during the competition. Set
+      cloudflare_access_allowed_email_domain or
+      cloudflare_access_allowed_emails.
+    success_msg: >-
+      Allowing
+      {{ cloudflare_access_allowed_emails | join(', ')
+         if cloudflare_access_allowed_emails
+         else '@' ~ cloudflare_access_allowed_email_domain }}
+  tags: [cloudflare, access]
+
+# Fetched first so the role is idempotent: creating an app that already exists
+# returns an error rather than updating it.
+- name: Look for an existing Access application
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_account_id }}/access/apps"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ cloudflare_api_token }}"
+    status_code: [200]
+    timeout: 30
+  register: cloudflare_existing_apps
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags: [cloudflare, access]
+
+- name: Identify the application to manage
+  ansible.builtin.set_fact:
+    cloudflare_access_app: >-
+      {{ (cloudflare_existing_apps.json.result | default([]))
+         | selectattr('domain', 'equalto', cloudflare_public_hostname ~ '/admin')
+         | list | first | default({}) }}
+  tags: [cloudflare, access]
+
+- name: Create the Access application
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_account_id }}/access/apps"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ cloudflare_api_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      name: "{{ cloudflare_access_app_name }}"
+      domain: "{{ cloudflare_public_hostname }}/admin"
+      type: self_hosted
+      session_duration: "{{ cloudflare_access_session_duration }}"
+      # The login page is shown by Cloudflare itself, so an unauthenticated
+      # visitor never reaches Django at all.
+      app_launcher_visible: false
+      auto_redirect_to_identity: false
+      # Bypass the check for requests already carrying a valid Access JWT.
+      allowed_idps: []
+      skip_interstitial: true
+    status_code: [200, 201]
+    timeout: 30
+  register: cloudflare_app_created
+  when: cloudflare_access_app.id is not defined
+  no_log: true
+  tags: [cloudflare, access]
+
+- name: Determine the application id
+  ansible.builtin.set_fact:
+    cloudflare_access_app_id: >-
+      {{ cloudflare_access_app.id
+         | default(cloudflare_app_created.json.result.id | default('')) }}
+  tags: [cloudflare, access]
+
+# Cloudflare's include format is a list of single-key rule objects:
+#   [{"email": {"email": "a@b.com"}}, {"email_domain": {"domain": "b.com"}}]
+# Built explicitly rather than with a chain of filters — this is readable, and
+# a wrong include here silently locks everyone out rather than erroring.
+- name: Build the allow rules from explicit addresses
+  ansible.builtin.set_fact:
+    cloudflare_access_include: >-
+      {{ cloudflare_access_include | default([]) + [{'email': {'email': item}}] }}
+  loop: "{{ cloudflare_access_allowed_emails }}"
+  when: cloudflare_access_allowed_emails | length > 0
+  tags: [cloudflare, access]
+
+- name: Build the allow rule from the email domain
+  ansible.builtin.set_fact:
+    cloudflare_access_include:
+      - email_domain:
+          domain: "{{ cloudflare_access_allowed_email_domain }}"
+  when: cloudflare_access_allowed_emails | length == 0
+  tags: [cloudflare, access]
+
+- name: Attach the allow policy
+  ansible.builtin.uri:
+    url: >-
+      https://api.cloudflare.com/client/v4/accounts/{{ cloudflare_account_id }}/access/apps/{{ cloudflare_access_app_id }}/policies
+    method: POST
+    headers:
+      Authorization: "Bearer {{ cloudflare_api_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      name: "JengaSec organisers"
+      decision: allow
+      precedence: 1
+      include: "{{ cloudflare_access_include }}"
+    status_code: [200, 201, 409]
+    timeout: 30
+  register: cloudflare_policy
+  changed_when: (cloudflare_policy.status | default(0)) in [200, 201]
+  failed_when: false
+  when: cloudflare_access_app_id | length > 0
+  no_log: true
+  tags: [cloudflare, access]
+
+- name: Report the Access configuration
+  ansible.builtin.debug:
+    msg: >-
+      Access is protecting {{ cloudflare_public_hostname }}/admin —
+      {{ 'allowing @' ~ cloudflare_access_allowed_email_domain
+         if not cloudflare_access_allowed_emails
+         else 'allowing ' ~ (cloudflare_access_allowed_emails | join(', ')) }},
+      session {{ cloudflare_access_session_duration }}.
+      TEST THIS FROM A LOGGED-OUT BROWSER before the competition: an Access
+      policy that excludes the organisers locks them out of scoring, and the
+      fix is in Cloudflare's dashboard rather than on the server.
+  tags: [cloudflare, access]

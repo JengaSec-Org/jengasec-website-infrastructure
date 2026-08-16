@@ -3,16 +3,31 @@
 
 # ── Firewall ────────────────────────────────────────────────────────────────
 # Merged with firewall_rules_common by the firewall role.
-# HTTP/HTTPS are open to everyone: this is the public face of the competition.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  NOTHING IS OPEN TO THE INTERNET.                                       │
+# │                                                                         │
+# │  Off-campus traffic arrives through the Cloudflare Tunnel, which is an   │
+# │  OUTBOUND connection from server1 — no inbound port is involved at all.  │
+# │                                                                         │
+# │  So 443 is restricted to the competition LAN and 80 is closed entirely.  │
+# │  On-campus users reach nginx directly, which is faster and keeps working │
+# │  if Cloudflare is unreachable; everyone else comes via the tunnel.       │
+# │                                                                         │
+# │  The result: server1 is invisible to internet-wide scanning. That is the │
+# │  main security win of running a tunnel, and re-opening these rules to    │
+# │  `any` would throw it away.                                             │
+# └─────────────────────────────────────────────────────────────────────────┘
 firewall_rules_group:
-  - port: 80
-    proto: tcp
-    from: any
-    comment: "HTTP — redirects to HTTPS"
   - port: 443
     proto: tcp
-    from: any
-    comment: "HTTPS — JengaSec platform"
+    from: "{{ jengasec_network_cidr }}"
+    comment: "HTTPS — competition LAN only; off-campus arrives via the tunnel"
+
+# Port 80 is deliberately absent. nginx still listens on it and still redirects
+# to HTTPS — harmless behind a closed firewall, and correct again if the rule
+# is ever restored. Re-add it here if you move to Let's Encrypt, whose http-01
+# challenge needs inbound 80.
 
 # ── Gunicorn (Phase 4, role currently a stub) ───────────────────────────────
 # Worker count follows the (2 x cores) + 1 convention, capped so the box keeps
@@ -26,10 +41,33 @@ gunicorn_bind: "unix:/run/gunicorn/gunicorn.sock"
 # These become the .env file rendered by the django role. Names match exactly
 # what config/settings.py reads — do not rename them.
 django_debug: false
+
+# Both names, because both reach this platform. Django returns 400 for any Host
+# header not listed here — so omitting the public name means the tunnel
+# delivers requests the application then refuses, which presents as a Cloudflare
+# error rather than a Django one.
+#
+# django_csrf_trusted_origins is derived from this list, so the public origin is
+# trusted automatically.
 django_allowed_hosts:
-  - "platform.{{ jengasec_domain }}"
+  - "platform.{{ jengasec_domain }}"          # internal, via Bind9
+  - "platform.{{ jengasec_public_domain }}"   # public, via the Cloudflare Tunnel
   - "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+
 django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
+
+# ── nginx ───────────────────────────────────────────────────────────────────
+# server_name stays the internal name — the TLS certificate is issued for it,
+# and cloudflared presents it as SNI. The public name is an alias, so the same
+# vhost answers both.
+nginx_server_aliases:
+  - "platform.{{ jengasec_public_domain }}"
+
+# ── Cloudflare ──────────────────────────────────────────────────────────────
+# Off until the Cloudflare prerequisites exist — an account, a zone, a tunnel,
+# and its token. See docs/runbook.md.
+cloudflare_enabled: false
+cloudflare_access_allowed_email_domain: strathmore.edu
 
 # Points Django at PostgreSQL on server2. Setting JENGASEC_DB_NAME is what
 # switches settings.py off SQLite, so it must always be present in production.

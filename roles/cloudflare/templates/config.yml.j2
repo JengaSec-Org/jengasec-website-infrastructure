@@ -1,0 +1,98 @@
+# {{ common_managed_banner }}
+#
+# cloudflared on {{ inventory_hostname }}.
+#
+# The tunnel dials OUT to Cloudflare and holds the connection open; requests
+# arrive down it. Nothing inbound is needed, which is why group_vars/web closes
+# 80 and restricts 443 to the LAN.
+#
+# Validate:  cloudflared tunnel --config {{ cloudflare_config_dir }}/config.yml ingress validate
+# Test a URL against the rules below:
+#            cloudflared tunnel --config … ingress rule https://{{ cloudflare_public_hostname }}/admin/
+
+# The token in {{ cloudflare_config_dir }}/token identifies which tunnel this is.
+# It is passed on the command line by the unit, not named here, so this file can
+# stay 0640 while the token stays 0600.
+
+# ── Connection ──────────────────────────────────────────────────────────────
+protocol: {{ cloudflare_protocol }}
+
+# Four connections to different Cloudflare edge locations. Losing one — a data
+# centre, a route — does not drop the site.
+ha-connections: {{ cloudflare_ha_connections }}
+
+loglevel: {{ cloudflare_loglevel }}
+
+# Loopback only. Exposes /ready and /metrics, which the role uses to confirm the
+# tunnel registered, and which Prometheus could scrape later.
+metrics: {{ cloudflare_metrics_bind }}
+
+# No auto-update. An unattended binary replacement mid-competition is not a risk
+# worth taking; upgrades come through apt, when someone is watching.
+no-autoupdate: true
+
+# ── Ingress ─────────────────────────────────────────────────────────────────
+#
+# Matched IN ORDER, first match wins.
+#
+# The catch-all at the bottom is NOT optional: cloudflared refuses to start
+# without a final rule that has no hostname, and the error it prints does not
+# mention ingress at all.
+
+ingress:
+{% for rule in cloudflare_ingress_rules %}
+  - hostname: {{ rule.hostname }}
+{% if rule.path is defined %}
+    path: {{ rule.path }}
+{% endif %}
+    service: {{ rule.service }}
+{% if rule.origin_request is defined %}
+    originRequest:
+{% for key, value in rule.origin_request.items() %}
+      {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+  # ── The platform ──────────────────────────────────────────────────────────
+  - hostname: {{ cloudflare_public_hostname }}
+    service: {{ cloudflare_origin_url }}
+    originRequest:
+      # nginx and cloudflared are on the same host, so this never crosses a
+      # wire — but HTTPS here reuses the certificate the certificates role
+      # already issues, and avoids adding a loopback-only HTTP listener that
+      # would need its own server block.
+      #
+      # The certificate is issued for the INTERNAL name, so SNI must present
+      # that name or nginx serves the default vhost and verification fails.
+      originServerName: {{ cloudflare_origin_server_name }}
+{% if cloudflare_origin_no_tls_verify %}
+      # Unverified. Encryption without authentication — nearly harmless on
+      # loopback, still the wrong habit. Prefer caPool.
+      noTLSVerify: true
+{% else %}
+      caPool: {{ cloudflare_origin_ca_pool }}
+      noTLSVerify: false
+{% endif %}
+
+      # More patient than nginx (proxy_read_timeout {{ nginx_proxy_read_timeout | default(180) }}s), which is more
+      # patient than gunicorn ({{ gunicorn_timeout | default(120) }}s). Each layer must outlast the one
+      # behind it, or the outer one abandons work still in progress.
+      connectTimeout: {{ cloudflare_connect_timeout }}
+      tlsTimeout: {{ cloudflare_tls_timeout }}
+      keepAliveConnections: {{ cloudflare_keepalive_connections }}
+      keepAliveTimeout: {{ cloudflare_keepalive_timeout }}
+
+      # Pass the Host header through unchanged so Django's ALLOWED_HOSTS sees
+      # the public name. Rewriting it here would mean the public hostname never
+      # reaches the application and every request 400s.
+      httpHostHeader: {{ cloudflare_public_hostname }}
+
+      # Do not let the tunnel be used to reach anything else on this host.
+      disableChunkedEncoding: false
+
+  # ── Catch-all ─────────────────────────────────────────────────────────────
+  # REQUIRED and must be last. Anything not matched above — a scan for a
+  # hostname we do not serve, a stale DNS record — gets a 404 rather than
+  # reaching nginx.
+  - service: http_status:404

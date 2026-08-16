@@ -1,21 +1,99 @@
 ---
 # Defaults for the `monitoring` role — Phase 7.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# The role does two different jobs depending on which group the host is in:
+#
+#   `monitored`   install node_exporter (every host)
+#   `monitoring`  install Prometheus and Grafana (server3 only)
+#
+# Keeping the collector off the web and database hosts is deliberate:
+# monitoring should survive the failure it exists to report.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-monitoring_enabled: false
-
-prometheus_version: "2.53.0"
-prometheus_retention_time: "30d"
-# cap it; server3 is not large
-prometheus_retention_size: "8GB"
-prometheus_scrape_interval: "30s"
-# derived from the inventory, never hand-listed
-prometheus_scrape_targets: "{{ groups['monitored'] | default([]) }}"
-node_exporter_version: "1.8.2"
+# ── node_exporter ───────────────────────────────────────────────────────────
+# Debian's package, not a GitHub tarball. Older than upstream, and it gets
+# security updates through apt without anyone remembering to check.
+node_exporter_package: prometheus-node-exporter
+node_exporter_service: prometheus-node-exporter
 node_exporter_port: 9100
-grafana_admin_user: "admin"
+
+# Bind to the private address, not 0.0.0.0. node_exporter exposes a detailed
+# inventory of the host — kernel version, filesystems, every listening port,
+# every systemd unit. That is a reconnaissance gift on a competition network.
+node_exporter_bind: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+
+# Collectors beyond the defaults. systemd is worth the overhead: it is what
+# turns "the service is down" into an alert rather than a discovery.
+node_exporter_enabled_collectors:
+  - systemd
+node_exporter_disabled_collectors:
+  - mdadm
+  - infiniband
+  - nfs
+  - nfsd
+
+# ── Prometheus ──────────────────────────────────────────────────────────────
+prometheus_package: prometheus
+prometheus_service: prometheus
+prometheus_config_dir: /etc/prometheus
+prometheus_data_dir: /var/lib/prometheus/metrics2
+prometheus_port: 9090
+prometheus_bind: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+
+prometheus_scrape_interval: "30s"
+prometheus_evaluation_interval: "30s"
+prometheus_scrape_timeout: "10s"
+
+# BOTH caps matter. Time alone does not bound disk if a new exporter multiplies
+# the series count, and server3 also holds every backup — a monitoring system
+# that fills the disk it shares with the backups is worse than no monitoring.
+prometheus_retention_time: "30d"
+prometheus_retention_size: "8GB"
+
+# Targets are derived from the `monitored` inventory group, so a new server is
+# scraped the moment it joins. Never hand-list them: a host added to the
+# inventory but forgotten here is a host nobody is watching.
+prometheus_scrape_targets: "{{ groups['monitored'] | default([]) }}"
+
+# ── Alerting ────────────────────────────────────────────────────────────────
+# Rules are evaluated even without Alertmanager — they show as firing in the
+# Prometheus UI, which is enough for a club that checks a dashboard. Wire up
+# Alertmanager when someone will actually be paged.
+prometheus_alerting_enabled: true
+prometheus_alertmanager_enabled: false
+prometheus_alertmanager_host: ""
+
+# Thresholds. Deliberately conservative — an alert that fires constantly is an
+# alert everyone learns to ignore, and then the real one goes unread too.
+prometheus_alert_disk_percent: 85
+prometheus_alert_memory_percent: 90
+prometheus_alert_load_multiplier: 2          # load average vs core count
+prometheus_alert_cert_expiry_days: 21
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+# Not in Debian, so it comes from apt.grafana.com with the signing key pinned in
+# /etc/apt/keyrings and the repository scoped to that key alone.
+#
+# This is the only third-party APT source in the repository. Recorded in
+# docs/decisions.md — a security club should know exactly where its packages
+# come from.
+grafana_enabled: true
+grafana_package: grafana
+grafana_service: grafana-server
+grafana_port: 3000
+grafana_bind: "0.0.0.0"          # reached from club laptops, firewalled to the LAN
+
+grafana_apt_key_url: "https://apt.grafana.com/gpg.key"
+grafana_apt_keyring: /etc/apt/keyrings/grafana.asc
+grafana_apt_repo: "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main"
+
+grafana_admin_user: admin
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
+
+# Anonymous access off. The dashboards show service health, hostnames, and
+# traffic patterns — useful reconnaissance during a competition.
 grafana_anonymous_access: false
+
+# Off: it phones home with usage statistics, and there is no reason for a
+# competition server to make outbound calls nobody asked for.
+grafana_analytics_enabled: false
+grafana_domain: "grafana.{{ jengasec_domain | default('jengasec.local') }}"

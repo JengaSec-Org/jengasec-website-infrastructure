@@ -1,0 +1,72 @@
+---
+# Lab database host — server2, 1.5 GB.
+#
+# The tuning here is the point of the exercise as much as the lab is: the
+# production values are fractions of 4 GB, and blindly copying them onto a
+# 1.5 GB VM makes PostgreSQL refuse to start. Recalculating them is what you
+# would do moving to any different machine.
+
+firewall_rules_group:
+  # The rule most worth proving in a lab: reachable from server1, nothing else.
+  # Test it from server3 — it must fail.
+  - port: 5432
+    proto: tcp
+    from: "192.168.56.11"
+    comment: "PostgreSQL — from the web host ONLY"
+  - port: 6379
+    proto: tcp
+    from: "192.168.56.11"
+    comment: "Redis — from the web host only"
+
+# ── PostgreSQL on 1.5 GB ────────────────────────────────────────────────────
+postgresql_version: 15
+postgresql_listen_addresses: "192.168.56.12"
+
+# 25% of RAM, as in production — the fraction is what carries across, not the
+# number. 1 GB here would be more than the VM has for everything else.
+postgresql_shared_buffers: "256MB"
+postgresql_effective_cache_size: "768MB"
+
+# Small, and it is per SORT rather than per connection: 50 connections doing
+# three sorts each could reach 50 x 3 x this.
+postgresql_work_mem: "4MB"
+postgresql_maintenance_work_mem: "64MB"
+
+# 50, not 100. Each connection is a process with its own memory.
+postgresql_max_connections: 50
+
+postgresql_databases:
+  - name: jengasec
+    owner: jengasec
+    encoding: UTF8
+
+postgresql_users:
+  - name: jengasec
+    db: jengasec
+    priv: ALL
+    password: "{{ vault_postgresql_jengasec_password }}"
+
+postgresql_hba_entries:
+  - type: host
+    database: jengasec
+    user: jengasec
+    address: "192.168.56.11/32"
+    method: scram-sha-256
+
+  # The backup host needs to run pg_dump over SSH. It connects locally on
+  # server2, so no host entry is needed — but it does need a role, created by
+  # hand in the lab. See docs/lab-setup.md.
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+redis_bind: "192.168.56.12"
+redis_maxmemory: "64mb"          # a cap Redis will actually hit, so you see eviction work
+redis_maxmemory_policy: allkeys-lru
+redis_requirepass: "{{ vault_redis_password }}"
+
+# ── Kernel ──────────────────────────────────────────────────────────────────
+os_sysctl_overrides:
+  vm.swappiness: 1
+  # overcommit_memory 2 is correct on a real database server and wrong here:
+  # on a 1.5 GB VM with 1 GB swap it refuses allocations PostgreSQL needs at
+  # startup, and the error does not mention overcommit.
+  vm.overcommit_memory: 0

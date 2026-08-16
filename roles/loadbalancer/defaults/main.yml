@@ -1,22 +1,91 @@
 ---
 # Defaults for the `loadbalancer` role — Phase 6.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  YOU PROBABLY DO NOT NEED THIS ROLE.                                      │
+# │                                                                           │
+# │  nginx already load balances Django traffic — see nginx_upstream_servers  │
+# │  in roles/nginx/defaults/main.yml. Adding a second application host is an │
+# │  edit to that list, not a reason to deploy HAProxy.                       │
+# │                                                                           │
+# │  This role is for a DEDICATED load balancing tier in front of several     │
+# │  NGINX hosts — the layer you add after outgrowing one nginx, which with   │
+# │  three servers and one web host is a long way off.                        │
+# │                                                                           │
+# │  Ownership boundary: nginx owns /etc/nginx, this role owns /etc/haproxy.  │
+# └───────────────────────────────────────────────────────────────────────────┘
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
+# Off. Enabling it on a host that is also running nginx will fail — both want
+# ports 80 and 443, and whichever starts second does not.
 loadbalancer_enabled: false
 
-# haproxy | nginx
 loadbalancer_engine: haproxy
-# roundrobin | leastconn | source
-loadbalancer_algorithm: leastconn
-# list of dicts: name, address, port, weight
+loadbalancer_packages:
+  - haproxy
+loadbalancer_service_name: haproxy
+loadbalancer_config_file: /etc/haproxy/haproxy.cfg
+
+# ── Listeners ───────────────────────────────────────────────────────────────
+loadbalancer_bind_address: "0.0.0.0"
+loadbalancer_http_port: 80
+loadbalancer_https_port: 443
+loadbalancer_redirect_http: true
+
+loadbalancer_ssl_certificate: "/etc/ssl/jengasec/{{ inventory_hostname }}-haproxy.pem"
+
+# ── Backends ────────────────────────────────────────────────────────────────
+# The NGINX hosts behind this tier, not the gunicorn processes. Fields: name,
+# address, port, weight.
 loadbalancer_backends: []
-# the app must expose this
+# Example:
+#   - { name: web1, address: "10.0.0.11", port: 443, weight: 100 }
+#   - { name: web2, address: "10.0.0.14", port: 443, weight: 100 }
+
+# leastconn matches nginx's least_conn, and for the same reason: request
+# durations here are wildly uneven, so round-robin keeps handing work to a
+# backend already busy with a long one.
+loadbalancer_algorithm: leastconn
+
+# ── Health checks ───────────────────────────────────────────────────────────
+# Unlike nginx open source, HAProxy has ACTIVE health checking — it probes each
+# backend on a timer rather than waiting for a real request to fail. That is the
+# main thing this tier buys you.
+#
+# /healthz/ runs SELECT 1 and returns 200 or 503, so a backend whose database is
+# unreachable is taken out of rotation. Checking / would not do that: it is a
+# TemplateView touching no database, and returns 200 with PostgreSQL down.
 loadbalancer_health_check_path: "/healthz/"
 loadbalancer_health_check_interval: "5s"
-# judges lose work if their session moves
+loadbalancer_health_check_rise: 2        # consecutive passes before back in
+loadbalancer_health_check_fall: 3        # consecutive failures before out
+
+# ── Sessions ────────────────────────────────────────────────────────────────
+# A cookie, not source-address hashing. Correct where nginx's ip_hash is not:
+# a cookie identifies a browser, so an entire campus behind one NAT address is
+# still spread across backends.
+#
+# Only needed if session state is ever held per-backend. Django keeps sessions
+# in the database, so today this is belt and braces.
 loadbalancer_sticky_sessions: true
+loadbalancer_sticky_cookie: JENGASEC_LB
+
+# ── Timeouts ────────────────────────────────────────────────────────────────
+# Must exceed nginx's proxy_read_timeout, which in turn exceeds gunicorn's.
+# Each layer must be more patient than the one behind it, or the outer layer
+# gives up on work still in progress.
+loadbalancer_timeout_connect: "10s"
+loadbalancer_timeout_client: "200s"
+loadbalancer_timeout_server: "200s"
+loadbalancer_timeout_http_request: "10s"    # slow-loris defence
+loadbalancer_maxconn: 2000
+
+# ── Stats ───────────────────────────────────────────────────────────────────
+# Shows every backend's health, current sessions, and error counts — genuinely
+# useful, and a complete map of the infrastructure to anyone who reaches it.
+# LAN only, and authenticated.
 loadbalancer_stats_enabled: true
+loadbalancer_stats_port: 8404
+loadbalancer_stats_uri: /haproxy-stats
+loadbalancer_stats_bind: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+loadbalancer_stats_user: admin
+loadbalancer_stats_password: "{{ vault_haproxy_stats_password | default('') }}"

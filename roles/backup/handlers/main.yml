@@ -1,13 +1,15 @@
 ---
 # Handlers for the `backup` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
-- name: Restart backup
+# systemd does not notice a new unit file on its own — the symptom is
+# "Unit not found" for a file you can plainly see on disk.
+- name: Reload systemd for backup
   ansible.builtin.systemd:
-    name: "{{ backup_service_name | default('backup') }}"
-    state: restarted
     daemon_reload: true
-  listen: "restart backup"
-  when: backup_enabled | bool
+  listen: "reload systemd for backup"
+
+- name: Restart backup timer
+  ansible.builtin.systemd:
+    name: jengasec-backup.timer
+    state: restarted
+  listen: "restart backup timer"

@@ -1,0 +1,69 @@
+# {{ common_managed_banner }}
+#
+# Prometheus on {{ inventory_hostname }}.
+#
+# Validated with `promtool check config` before it replaces the live file.
+#
+# NOTE: retention and the listen address are NOT here — they are command-line
+# flags, set in /etc/default/prometheus. Looking for a retention setting in this
+# file is a well-worn dead end.
+
+global:
+  scrape_interval: {{ prometheus_scrape_interval }}
+  scrape_timeout: {{ prometheus_scrape_timeout }}
+  evaluation_interval: {{ prometheus_evaluation_interval }}
+
+  # Attached to every metric this server scrapes. Useful the moment there is
+  # more than one Prometheus, and harmless before that.
+  external_labels:
+    environment: "{{ jengasec_environment | default('production') }}"
+    site: jengasec
+{% if prometheus_alerting_enabled %}
+
+# ── Rules ───────────────────────────────────────────────────────────────────
+rule_files:
+  - "{{ prometheus_config_dir }}/rules/*.yml"
+{% endif %}
+{% if prometheus_alertmanager_enabled and prometheus_alertmanager_host %}
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["{{ prometheus_alertmanager_host }}"]
+{% else %}
+
+# Alertmanager is not deployed. Rules still evaluate and show as FIRING in the
+# Prometheus UI under Alerts — enough for a club that watches a dashboard.
+# Wire up Alertmanager when someone will actually be paged.
+{% endif %}
+
+# ── Scrape targets ──────────────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus scraping itself. If this target is down, nothing else here can be
+  # trusted either.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:{{ prometheus_port }}"]
+        labels:
+          host: "{{ inventory_hostname }}"
+
+  # Every host in the `monitored` inventory group.
+  #
+  # Generated from the inventory, never hand-listed: a server added to the
+  # inventory but forgotten here would be a server nobody is watching, and the
+  # gap would not announce itself.
+  - job_name: node
+    static_configs:
+{% for host in prometheus_scrape_targets %}
+      - targets: ["{{ hostvars[host]['ansible_host'] | default(host) }}:{{ node_exporter_port }}"]
+        labels:
+          host: "{{ host }}"
+          role: "{{ hostvars[host]['host_role_description'] | default('unknown') }}"
+{% endfor %}
+
+    # Rewrite the instance label from address:port to the inventory name, so
+    # graphs and alerts read "server2" rather than "10.0.0.12:9100".
+    relabel_configs:
+      - source_labels: [host]
+        target_label: instance

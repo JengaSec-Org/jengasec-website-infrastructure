@@ -147,6 +147,52 @@
   when: users_ssh_exclusive | bool
   tags: [users, ssh-keys]
 
+# ── Backup pull key ─────────────────────────────────────────────────────────
+
+# Installed on the SOURCE hosts (server1, server2) so the backup host can pull.
+# Never on the backup host itself — that is where the private key lives, and it
+# has no reason to accept its own pull key back.
+#
+# rrsync ships inside Debian's rsync package but is not on PATH.
+- name: Make rrsync available for the forced command
+  ansible.builtin.file:
+    src: /usr/share/rsync/scripts/rrsync
+    dest: /usr/bin/rrsync
+    state: link
+    force: true
+  when:
+    - users_backup_pull_enabled | bool
+    - "'backup' not in group_names"
+  failed_when: false      # path moved between rsync releases; the assert below catches it
+  tags: [users, backup-key]
+
+- name: Install the forced-command backup pull key
+  ansible.posix.authorized_key:
+    user: backup
+    key: "{{ users_backup_pull_key }}"
+    key_options: >-
+      command="{{ users_backup_pull_command }}",restrict,from="{{ users_backup_pull_from }}"
+    state: present
+    manage_dir: true
+  when:
+    - users_backup_pull_enabled | bool
+    - users_backup_pull_key | length > 0
+    - "'backup' not in group_names"
+  tags: [users, backup-key]
+
+- name: Explain a missing backup pull key
+  ansible.builtin.debug:
+    msg: >-
+      users_backup_pull_enabled is true but users_backup_pull_key is empty.
+      Run the backup role on the backup host first — it generates the key and
+      prints the exact line to paste here. Until then server3 cannot pull from
+      {{ inventory_hostname }}, and its backups will fail.
+  when:
+    - users_backup_pull_enabled | bool
+    - users_backup_pull_key | length == 0
+    - "'backup' not in group_names"
+  tags: [users, backup-key]
+
 # ── Sudo ────────────────────────────────────────────────────────────────────
 
 - name: Ensure the sudoers include directory exists

@@ -43,6 +43,24 @@ users_admin_account: jengasec
 # Directory in the repository holding the public keys.
 users_ssh_key_dir: ssh-keys
 
+# ── Backup pull key ─────────────────────────────────────────────────────────
+# The `backup` role on server3 PULLS from the other hosts, so it needs an SSH
+# path in — but the backup account here is nologin, deliberately.
+#
+# The answer is a forced-command key: it can run one read-only rsync and nothing
+# else. Even stolen, it gets an attacker a read-only file copy from one address.
+#
+#   command="rrsync -ro /"  one read-only rsync, never a shell
+#   restrict                no port/agent forwarding, no PTY, no X11
+#   from="<backup host>"    only from server3
+#
+# Paste the public key the backup role prints on its first run. Until then this
+# stays off and the role tells you what to do.
+users_backup_pull_enabled: false
+users_backup_pull_key: ""
+users_backup_pull_from: "10.0.0.13"      # TODO: replace with server3's address
+users_backup_pull_command: "/usr/bin/rrsync -ro /"
+
 # ── Key hygiene ─────────────────────────────────────────────────────────────
 # true makes authorized_keys match this repository exactly, removing any key
 # added by hand. That is the correct end state — an SSH key nobody can account

@@ -1,0 +1,49 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# Warn when a filesystem passes {{ cron_disk_check_threshold }}% used.
+#
+# Prometheus covers this too, but this one mails a human and needs no exporter —
+# useful precisely when monitoring is the thing that broke.
+#
+# Silence means everything is fine.
+
+set -uo pipefail
+
+THRESHOLD={{ cron_disk_check_threshold }}
+PROBLEMS=0
+
+# -x excludes pseudo-filesystems that are full by design and would report 100%
+# forever. -P forces one line per filesystem, so a long device name does not
+# wrap and break the column offsets.
+while read -r filesystem size used avail percent mount; do
+    pct=${percent%\%}
+    if [ "$pct" -ge "$THRESHOLD" ]; then
+        echo "DISK: $mount is ${pct}% full (${avail} free of ${size})"
+        PROBLEMS=$(( PROBLEMS + 1 ))
+
+        # The three usual culprits, worth naming so nobody has to go hunting.
+        case "$mount" in
+            /|/var)
+                echo "  Largest directories under /var:"
+                du -xh --max-depth=2 /var 2>/dev/null | sort -rh | head -5 | sed 's/^/    /'
+                echo "  Journal: $(journalctl --disk-usage 2>/dev/null | sed 's/^Archived and active journals take up //')"
+                ;;
+        esac
+    fi
+done < <(df -PTx tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1 {print $1, $3, $4, $5, $6, $7}')
+
+# Inodes fill independently of bytes, and a filesystem out of inodes reports
+# plenty of free space while refusing to create a file — a genuinely confusing
+# failure that this catches.
+while read -r filesystem inodes iused ifree ipercent mount; do
+    pct=${ipercent%\%}
+    [ "$pct" = "-" ] && continue
+    if [ "$pct" -ge "$THRESHOLD" ]; then
+        echo "INODES: $mount is ${pct}% of inodes used (${ifree} free)"
+        echo "  The filesystem will refuse to create files while reporting free space."
+        PROBLEMS=$(( PROBLEMS + 1 ))
+    fi
+done < <(df -PTix tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1 {print $1, $3, $4, $5, $6, $7}')
+
+exit $(( PROBLEMS > 0 ? 1 : 0 ))

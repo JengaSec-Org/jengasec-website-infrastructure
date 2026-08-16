@@ -1,0 +1,119 @@
+---
+# monitoring — Grafana, on the `monitoring` host only.
+#
+# Grafana is not in Debian, so this adds the only third-party APT source in the
+# repository. The key is pinned in /etc/apt/keyrings and the repo is scoped to
+# that key with signed-by=, so this source can install Grafana packages and
+# nothing else — it cannot silently take over a Debian package name.
+#
+# Recorded in docs/decisions.md. A security club should know exactly where every
+# package on its servers comes from.
+
+- name: Ensure the keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [monitoring, grafana, packages]
+
+# Into /etc/apt/keyrings, not the deprecated apt-key. A key in the global
+# trusted set can sign ANY repository; scoped with signed-by= below, this one
+# can only sign Grafana's.
+- name: Fetch the Grafana signing key
+  ansible.builtin.get_url:
+    url: "{{ grafana_apt_key_url }}"
+    dest: "{{ grafana_apt_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_grafana_key
+  tags: [monitoring, grafana, packages]
+
+- name: Add the Grafana repository
+  ansible.builtin.apt_repository:
+    repo: "{{ grafana_apt_repo }}"
+    filename: grafana
+    state: present
+    update_cache: true
+  tags: [monitoring, grafana, packages]
+
+- name: Install Grafana
+  ansible.builtin.apt:
+    name: "{{ grafana_package }}"
+    state: present
+  tags: [monitoring, grafana, packages]
+
+- name: Write the Grafana configuration
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: root
+    group: grafana
+    mode: "0640"
+    backup: true
+  no_log: true
+  notify: Restart grafana
+  tags: [monitoring, grafana, config]
+
+# ── Provisioning ────────────────────────────────────────────────────────────
+# Datasources and dashboards defined as files rather than clicked in the UI, so
+# a rebuilt server comes back with the same dashboards.
+
+- name: Ensure the provisioning directories exist
+  ansible.builtin.file:
+    path: "/etc/grafana/provisioning/{{ item }}"
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+  loop:
+    - datasources
+    - dashboards
+  tags: [monitoring, grafana, config]
+
+- name: Provision the Prometheus datasource
+  ansible.builtin.template:
+    src: grafana-datasource.yml.j2
+    dest: /etc/grafana/provisioning/datasources/jengasec.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart grafana
+  tags: [monitoring, grafana, config]
+
+- name: Enable and start Grafana
+  ansible.builtin.systemd:
+    name: "{{ grafana_service }}"
+    enabled: true
+    state: started
+  tags: [monitoring, grafana, service]
+
+- name: Apply pending Grafana changes
+  ansible.builtin.meta: flush_handlers
+  tags: [monitoring, grafana]
+
+- name: Wait for Grafana to answer
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ grafana_port }}/api/health"
+    return_content: true
+    timeout: 10
+  register: monitoring_grafana_health
+  retries: 6
+  delay: 5
+  until: (monitoring_grafana_health.status | default(0)) == 200
+  changed_when: false
+  failed_when: false
+  tags: [monitoring, grafana, verify]
+
+- name: Report Grafana state
+  ansible.builtin.debug:
+    msg: >-
+      Grafana is
+      {{ 'up at http://' ~ inventory_hostname ~ ':' ~ grafana_port
+         if (monitoring_grafana_health.status | default(0)) == 200
+         else 'not responding — check journalctl -u ' ~ grafana_service }}.
+      Sign in as {{ grafana_admin_user }} with the vault password and change it
+      on first login if this is a shared environment.
+  tags: [monitoring, grafana, verify]

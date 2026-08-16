@@ -1,0 +1,38 @@
+# {{ common_managed_banner }}
+#
+# Grafana datasource provisioning.
+# /etc/grafana/provisioning/datasources/jengasec.yml
+#
+# Defined as a file rather than clicked in the UI, so a rebuilt server comes
+# back with the same datasource. Anything configured only through the web
+# interface is lost the moment the host is reinstalled — and this repository
+# exists so that reinstalling is cheap.
+
+apiVersion: 1
+
+# Removed before the ones below are added, so renaming a datasource here does
+# not leave the old one orphaned in Grafana's database.
+deleteDatasources:
+  - name: JengaSec Prometheus
+    orgId: 1
+
+datasources:
+  - name: JengaSec Prometheus
+    type: prometheus
+    access: proxy          # Grafana queries Prometheus server-side
+    orgId: 1
+    url: "http://127.0.0.1:{{ prometheus_port }}"
+    isDefault: true
+    version: 1
+
+    # Ansible owns this file, so editing it in the UI would be overwritten on
+    # the next run with no warning. Better to make it read-only and have people
+    # find the file.
+    editable: false
+
+    jsonData:
+      httpMethod: POST
+      # Match Prometheus's scrape interval. Setting it lower makes Grafana
+      # request resolution that does not exist and draws misleading gaps.
+      timeInterval: "{{ prometheus_scrape_interval }}"
+      manageAlerts: false

@@ -3,7 +3,7 @@ galaxy_info:
   role_name: minio
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: S3-compatible object storage for submissions at scale.
+  description: S3-compatible object storage. Optional — local disk already works.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,7 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - storage
+    - s3
 
 dependencies: []

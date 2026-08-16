@@ -1,0 +1,159 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# Restore a JengaSec backup.
+#
+# Written now, in calm conditions, because the moment you need it is the worst
+# possible moment to be working out the pg_restore flags.
+#
+#   jengasec-restore --list
+#   jengasec-restore --database 20261005
+#   jengasec-restore --media 20261005 --target /tmp/media-check
+#
+# It NEVER writes over the live database without --force. The most likely use is
+# recovering one deleted submission, not rebuilding everything — and a restore
+# script that makes the destructive path easy is a liability during an incident.
+
+set -uo pipefail
+
+DAILY="{{ backup_daily_dir }}"
+WEEKLY="{{ backup_weekly_dir }}"
+MONTHLY="{{ backup_monthly_dir }}"
+SSH_OPTS="{{ backup_ssh_opts }} -i {{ backup_ssh_key }}"
+DB_HOST="{{ hostvars[backup_verify_host]['ansible_host'] | default(backup_verify_host) }}"
+
+MODE=""
+STAMP=""
+TARGET=""
+FORCE=0
+LIVE_DB="{{ backup_verify_scratch_db }}"
+
+usage() {
+    cat <<'USAGE'
+jengasec-restore — restore from a JengaSec backup
+
+  --list                    show every available backup
+  --database <date>         restore a database dump
+  --media <date>            extract a media archive
+  --config <date>           extract a configuration archive
+  --target <path>           where to extract (file restores)
+  --into <dbname>           database to restore INTO (default: a scratch db)
+  --force                   allow restoring over a database that already exists
+  -h, --help                this message
+
+Dates are the directory names shown by --list, e.g. 20261005.
+
+Restoring the live database over itself needs --force AND --into jengasec.
+That is deliberate friction: recovering one deleted row is far more common
+than rebuilding the world, and the second should not be one typo away.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list)     MODE=list; shift ;;
+        --database) MODE=database; STAMP="${2:-}"; shift 2 ;;
+        --media)    MODE=media; STAMP="${2:-}"; shift 2 ;;
+        --config)   MODE=config; STAMP="${2:-}"; shift 2 ;;
+        --target)   TARGET="${2:-}"; shift 2 ;;
+        --into)     LIVE_DB="${2:-}"; shift 2 ;;
+        --force)    FORCE=1; shift ;;
+        -h|--help)  usage; exit 0 ;;
+        *) echo "unknown option: $1"; usage; exit 1 ;;
+    esac
+done
+
+[ -z "$MODE" ] && { usage; exit 1; }
+
+# ── List ────────────────────────────────────────────────────────────────────
+if [ "$MODE" = list ]; then
+    for tier in "$DAILY:daily" "$WEEKLY:weekly" "$MONTHLY:monthly"; do
+        dir="${tier%:*}"; label="${tier#*:}"
+        echo "── ${label} ──"
+        if [ -d "$dir" ]; then
+            find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -r \
+            | while read -r d; do
+                size=$(du -sh "${dir}/${d}" 2>/dev/null | cut -f1)
+                files=$(find "${dir}/${d}" -type f | wc -l)
+                printf '  %s  %6s  %d file(s)\n' "$d" "$size" "$files"
+            done
+        fi
+        echo
+    done
+    exit 0
+fi
+
+[ -z "$STAMP" ] && { echo "a date is required — run --list"; exit 1; }
+
+# ── Locate ──────────────────────────────────────────────────────────────────
+SRC=""
+for dir in "$DAILY" "$WEEKLY" "$MONTHLY"; do
+    [ -d "${dir}/${STAMP}" ] && { SRC="${dir}/${STAMP}"; break; }
+done
+[ -z "$SRC" ] && { echo "no backup found for ${STAMP} — run --list"; exit 1; }
+
+echo "Using ${SRC}"
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+decrypt() {
+    local f="$1" out="$2"
+    case "$f" in
+        *.gpg)
+            echo "Decrypting — this needs the private key, which is deliberately not stored on this host."
+            gpg --batch --quiet --decrypt "$f" > "$out" || {
+                echo "Decryption failed. Import the private key temporarily, or run this on the machine that holds it."
+                exit 1
+            }
+            ;;
+        *) cp "$f" "$out" ;;
+    esac
+}
+
+case "$MODE" in
+  database)
+    dump=$(find "$SRC" -name 'postgresql-*' -type f | head -1)
+    [ -z "$dump" ] && { echo "no database dump in ${SRC}"; exit 1; }
+
+    if [ "$LIVE_DB" = "jengasec" ] && [ "$FORCE" -ne 1 ]; then
+        echo
+        echo "REFUSING to restore over the live 'jengasec' database without --force."
+        echo
+        echo "  Restoring into a scratch database and copying out the rows you need is"
+        echo "  almost always the right move — it is reversible, and it does not throw"
+        echo "  away everything written since the backup was taken."
+        echo
+        echo "  To restore into a scratch copy instead:"
+        echo "    jengasec-restore --database ${STAMP} --into jengasec_recovered"
+        echo
+        echo "  If you really do mean to overwrite the live database:"
+        echo "    jengasec-restore --database ${STAMP} --into jengasec --force"
+        exit 1
+    fi
+
+    decrypt "$dump" "${WORK}/dump.gz"
+    gunzip -f "${WORK}/dump.gz"
+
+    echo "Restoring into ${LIVE_DB} on ${DB_HOST}"
+    ssh $SSH_OPTS "{{ backup_user }}@${DB_HOST}" "createdb ${LIVE_DB}" 2>/dev/null || true
+    ssh $SSH_OPTS "{{ backup_user }}@${DB_HOST}" \
+        "pg_restore -d ${LIVE_DB} --no-owner --no-privileges --clean --if-exists" < "${WORK}/dump"
+
+    tables=$(ssh $SSH_OPTS "{{ backup_user }}@${DB_HOST}" \
+        "psql -tAc \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\" ${LIVE_DB}")
+    echo "Restored ${tables} tables into ${LIVE_DB}."
+    ;;
+
+  media|config)
+    archive=$(find "$SRC" -name "${MODE}-*" -type f | head -1)
+    [ -z "$archive" ] && { echo "no ${MODE} archive in ${SRC}"; exit 1; }
+    [ -z "$TARGET" ] && { echo "--target is required for a ${MODE} restore"; exit 1; }
+
+    decrypt "$archive" "${WORK}/archive.tar.gz"
+    mkdir -p "$TARGET"
+    tar -xzf "${WORK}/archive.tar.gz" -C "$TARGET"
+    echo "Extracted to ${TARGET}"
+    echo "Nothing was written over the live directory — copy across what you need."
+    ;;
+esac

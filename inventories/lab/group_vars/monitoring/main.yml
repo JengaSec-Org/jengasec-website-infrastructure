@@ -1,0 +1,43 @@
+---
+# Lab monitoring — Prometheus and Grafana on server3, 1.5 GB.
+
+firewall_rules_group:
+  - port: 3000
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "Grafana"
+  - port: 9090
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "Prometheus"
+
+# ── Prometheus ──────────────────────────────────────────────────────────────
+# Both caps much smaller than production. server3 also holds the backups here,
+# on the same modest virtual disk.
+prometheus_retention_time: "7d"
+prometheus_retention_size: "512MB"
+
+# 30s, as in production. Shortening it in a lab makes graphs look livelier and
+# teaches you nothing — and it multiplies the series count on the box least
+# able to afford it.
+prometheus_scrape_interval: "30s"
+
+prometheus_bind: "192.168.56.13"
+node_exporter_bind: "192.168.56.13"
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+# Reachable from the host browser at http://192.168.56.13:3000
+grafana_enabled: true
+grafana_bind: "0.0.0.0"
+grafana_admin_user: admin
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
+grafana_anonymous_access: false
+grafana_domain: "grafana.{{ jengasec_domain }}"
+
+# Alert thresholds lowered so they actually fire on a small VM — an alerting
+# system you have never seen alert is one you do not know works.
+#
+# Fill the disk to watch DiskSpaceLow trip:
+#   dd if=/dev/zero of=/tmp/fill bs=1M count=2000
+prometheus_alert_disk_percent: 70
+prometheus_alert_memory_percent: 85

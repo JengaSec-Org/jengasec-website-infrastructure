@@ -1,0 +1,79 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# LAB vault template.
+#
+#   cp vault.yml.example vault.yml
+#   ansible-vault encrypt vault.yml
+#
+# You may reasonably skip the encryption step in a lab and just use vault.yml
+# in plaintext — it is gitignored either way, and these are throwaway VMs.
+#
+# But encrypt it once anyway. The ansible-vault workflow is the part worth
+# practising, and getting `make vault-edit` wrong for the first time on the day
+# you are configuring production is a bad trade for the ten seconds it saves.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  THESE ARE FAKE. Never reuse a lab value in production.                   │
+# │                                                                           │
+# │  They are deliberately obvious, so that if one ever turns up on a real    │
+# │  host you notice immediately.                                             │
+# └───────────────────────────────────────────────────────────────────────────┘
+
+# ── Django ──────────────────────────────────────────────────────────────────
+# Generate a real one even here — a predictable SECRET_KEY makes session
+# forgery trivial, and practising the generation costs nothing:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(64))"
+vault_django_secret_key: "lab-only-not-a-real-key-regenerate-before-production"
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+vault_postgresql_jengasec_password: "lab-postgres-pw"
+vault_postgresql_replication_password: "lab-replication-pw"
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+# 16 characters minimum — the role refuses anything shorter when Redis binds to
+# a non-loopback address, which it does here.
+vault_redis_password: "lab-redis-password-01"
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+# You will actually type this, at http://192.168.56.13:3000
+vault_grafana_admin_password: "lab-grafana-pw"
+
+# ── SMTP ────────────────────────────────────────────────────────────────────
+# Unused: the lab uses Django's console email backend, so password-reset mails
+# print to the journal. Watch them with:  journalctl -u gunicorn -f
+vault_smtp_host: "localhost"
+vault_smtp_port: 25
+vault_smtp_user: "lab@localhost"
+vault_smtp_password: "lab-smtp-pw"
+
+# ── Local account password ──────────────────────────────────────────────────
+# A HASH, not a password:  mkpasswd --method=sha-512
+vault_jengasec_password_hash: "$6$lab$notarealhash"
+
+# ── Internal CA ─────────────────────────────────────────────────────────────
+# Used for real in the lab — the certificates role builds a working CA and
+# issues certificates from it, which is worth seeing.
+vault_ca_passphrase: "lab-ca-passphrase"
+
+# ── Backup ──────────────────────────────────────────────────────────────────
+vault_backup_gpg_passphrase: "lab-backup-passphrase"
+
+# ── HAProxy ─────────────────────────────────────────────────────────────────
+# loadbalancer_enabled is false in the lab.
+vault_haproxy_stats_password: "lab-haproxy-pw"
+
+# ── MinIO ───────────────────────────────────────────────────────────────────
+# minio_enabled is false in the lab.
+vault_minio_root_password: "lab-minio-password-1"
+
+# ── Cloudflare ──────────────────────────────────────────────────────────────
+# cloudflare_enabled is false. To try the tunnel from the lab — which works
+# fine, and is a good way to see it without touching production — create a
+# SEPARATE tunnel and hostname, never the production one.
+vault_cloudflare_tunnel_token: "lab-not-set"
+vault_cloudflare_api_token: "lab-not-set"
+vault_cloudflare_account_id: "lab-not-set"
+vault_cloudflare_zone_id: "lab-not-set"
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+vault_rndc_key: "lab-rndc-key"

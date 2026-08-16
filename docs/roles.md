@@ -5,7 +5,11 @@ All 30 roles and their implementation status.
 For what these roles actually do to a server, and what you must configure before
 running them, see [pre-deployment.md](pre-deployment.md).
 
-**16 implemented** (Phases 1–3) · **14 stubs** (Phases 4–10)
+**All 30 implemented.** No stubs remain.
+
+Five roles are implemented but **off by default**, because turning them on is a
+decision rather than a default: `networking`, `dhcp`, `loadbalancer`, `storage`,
+`minio`, and `cloudflare`. Each says why in its own README.
 
 ---
 
@@ -42,98 +46,93 @@ running them, see [pre-deployment.md](pre-deployment.md).
 | [`audit`](../roles/audit/README.md) | auditd — identity, privilege, config, competition data |
 | [`filesystem-security`](../roles/filesystem-security/README.md) | Permissions, ACLs, drift scans |
 
----
-
-## Stubs
-
-Every stub **fails loudly** rather than reporting success while doing nothing.
-Its `defaults/main.yml` already defines the intended variable contract, so
-`group_vars` written today keeps working when the tasks are filled in.
-
 ### Phase 4 — Application platform
 
-| Role | Will do |
+| Role | Does |
 |---|---|
-| [`nginx`](../roles/nginx/README.md) | Reverse proxy, TLS, security headers, rate limiting |
-| [`gunicorn`](../roles/gunicorn/README.md) | WSGI server, systemd unit and socket |
-| [`django`](../roles/django/README.md) | Clone, venv, `.env`, migrate, collectstatic |
-| [`redis`](../roles/redis/README.md) | Cache, sessions, future Celery broker |
+| [`redis`](../roles/redis/README.md) | Cache and session store. Memory-capped, command-renamed, sandboxed |
+| [`gunicorn`](../roles/gunicorn/README.md) | systemd **socket + service** pair, worker tuning, graceful reload |
+| [`django`](../roles/django/README.md) | Checkout, virtualenv, `.env`, migrations, collectstatic |
+| [`nginx`](../roles/nginx/README.md) | TLS, **load balancing**, static/media, rate limiting, security headers |
 
 ### Phase 5 — Database
 
-| Role | Will do |
+| Role | Does |
 |---|---|
-| [`postgresql`](../roles/postgresql/README.md) | Server, tuning, `pg_hba`, databases, roles, replication |
+| [`postgresql`](../roles/postgresql/README.md) | Server, RAM-proportional tuning, `pg_hba`, databases, roles |
 
 ### Phase 6 — High availability
 
-| Role | Will do |
+| Role | Does |
 |---|---|
-| [`loadbalancer`](../roles/loadbalancer/README.md) | HAProxy, health checks, sticky sessions |
+| [`loadbalancer`](../roles/loadbalancer/README.md) | HAProxy tier for **multiple nginx hosts**. Off — nginx balances already |
 
 ### Phase 7 — Operations
 
-| Role | Will do |
+| Role | Does |
 |---|---|
-| [`monitoring`](../roles/monitoring/README.md) | Prometheus, Grafana, node_exporter |
-| [`logging`](../roles/logging/README.md) | Journal retention, logrotate, remote forwarding |
+| [`logging`](../roles/logging/README.md) | logrotate and rsyslog. Journald belongs to `os` |
+| [`monitoring`](../roles/monitoring/README.md) | Prometheus, node_exporter, Grafana, alert rules |
+| [`cron`](../roles/cron/README.md) | Certificate expiry, disk checks, temp cleanup |
 | [`deployment`](../roles/deployment/README.md) | Release, health check, rollback |
-| [`cron`](../roles/cron/README.md) | Scheduled maintenance |
 
 ### Phase 8 — Storage
 
-| Role | Will do |
-|---|---|
-| [`storage`](../roles/storage/README.md) | Filesystem layout, mounts, quotas |
-| [`minio`](../roles/minio/README.md) | S3-compatible object storage |
+| Role | Does | Default |
+|---|---|---|
+| [`storage`](../roles/storage/README.md) | Mount points, fstab, quotas, disk guards | **off** — nothing to mount on local disks |
+| [`minio`](../roles/minio/README.md) | S3-compatible object storage | **off** — local disk plus nginx already works |
 
 ### Phase 9 — Public access
 
-| Role | Will do |
-|---|---|
-| [`cloudflare`](../roles/cloudflare/README.md) | Tunnel, DNS API, WAF rules |
+| Role | Does | Default |
+|---|---|---|
+| [`cloudflare`](../roles/cloudflare/README.md) | Tunnel + Access, so the platform is reachable off campus | **off** — needs a Cloudflare account, zone and tunnel first |
 
 ### Phase 10 — Continuity
 
-| Role | Will do |
-|---|---|
-| [`backup`](../roles/backup/README.md) | pg_dump, rsync, encryption, retention, verified restore |
+| Role | Does | Default |
+|---|---|---|
+| [`backup`](../roles/backup/README.md) | Pull-based encrypted backups, retention, verified restores | **on** |
 
 ---
 
-## Suggested implementation order
+## The six that are off by default
 
-Not the same as the phase numbers. This is what actually unblocks the most work
-next:
+Not unfinished — implemented, and switched off because enabling them is a
+decision:
 
-1. **`postgresql`** — nothing else in Phase 4 is useful without it
-2. **`gunicorn`** then **`django`** then **`nginx`** — in that order, so nginx
-   never proxies to a socket that does not exist
-3. **`backup`** — before the platform holds data anyone would miss
-4. **`monitoring`** and **`logging`** — you want these before the event, not after
-5. **`redis`** — only when sessions or caching become a real constraint
-6. **`storage`**, **`deployment`**, **`cron`** — quality of life
-7. **`loadbalancer`**, **`minio`**, **`cloudflare`** — only if the club grows into them
+| Role | Why off | Turn on when |
+|---|---|---|
+| `networking` | Reconfigures the interface you are connected over | The installer's addressing is not enough |
+| `dhcp` | A second DHCP server breaks a shared LAN for everyone | You have an isolated competition segment |
+| `loadbalancer` | nginx balances Django already | You outgrow one nginx host |
+| `storage` | Nothing to mount on three local disks | You add a volume |
+| `minio` | Local disk plus nginx already works, and its updates are manual | Submissions outgrow one disk |
+| `cloudflare` | Exposes the platform to the internet | The Cloudflare prerequisites exist — see the runbook |
 
-## Implementing a stubbed role
+## Adding a role
 
 1. **`defaults/main.yml` first.** Every value the role needs. Nothing literal
-   in tasks. The stub already has a starting contract — refine it.
+   in tasks.
 2. **Templates second.** Every managed file is a `.j2` starting with
    `{{ common_managed_banner }}`. Not `copy`, not `lineinfile`.
 3. **Tasks third**, referencing only variables. Add `validate:` wherever the
-   service offers a config checker — `nginx -t`, `postgres --check`. That single
-   line is what stops a bad template taking a service down.
+   service offers a config checker — `nginx -t`, `haproxy -c -f`,
+   `promtool check config`, `visudo -cf`, `cloudflared ingress validate`. That
+   single line is what stops a bad template taking a service down.
 4. **Handlers** for anything needing a restart. Prefer `reload` where the
-   service supports it.
-5. **Delete the `fail` task**, flip `<role>_enabled` to `true` in defaults.
-6. **Update this file** — move the role from Stubs to Implemented.
-7. **Rewrite `README.md`.** Not a formality: it is where the reasoning lives,
-   and the reasoning is what makes this repository worth reading.
+   service supports it, and say in a comment why the other one is wrong.
+5. **Guard anything destructive or lockout-capable** — assert before acting,
+   verify after, and make the failure message name the fix.
+6. **Add it to this file** and to `docs/pre-deployment.md`.
+7. **Write `README.md`.** Not a formality: it is where the reasoning lives, and
+   the reasoning is what makes this repository worth reading.
 
 Then:
 
 ```bash
+python tests/structure-check.py
 make lint && make syntax
 ansible-playbook -i inventories/development playbooks/<phase>.yml --check --connection=local
 ```
@@ -148,10 +147,13 @@ Worth knowing before writing a role here.
 - **Templates, never `lineinfile`**, for files Ansible owns. The one exception
   is `/etc/login.defs`, and it is explained where it happens.
 - **One owner per file.** Two roles writing the same file will fight, and the
-  result depends on run order. `os` owns sysctls; `ssh` owns sshd_config;
-  `users` owns sudoers.
+  result depends on run order. `os` owns sysctls and journald; `ssh` owns
+  sshd_config; `users` owns sudoers; `nginx` owns `/etc/nginx`; `loadbalancer`
+  owns `/etc/haproxy`; `logging` owns logrotate and rsyslog.
 - **`validate:` wherever a checker exists.**
 - **Guard anything that can lock you out** — assert before acting, verify after.
+- **Reload beats restart** wherever the service supports it, and the handler
+  should say why.
 - **Idempotence is the pass criterion.** If a second run reports changes, the
   role is wrong, even if the server looks right.
 - **Explain the why, not the what.** `# install nginx` above a task that

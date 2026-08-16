@@ -1,19 +1,26 @@
 ---
 # Phase 4 — Application platform
 #
-# STATUS: every role here is a stub. Running this playbook fails deliberately
-# rather than reporting success while configuring nothing.
-#
 #   make platform LIMIT=server1
 #
-# ROLE ORDER, once these are written:
-#   redis      before django, which will use it for sessions and cache
-#   gunicorn   creates the socket nginx proxies to
-#   django     the application itself — code, venv, migrations, static
+# Deploys the JengaSec platform: Redis, gunicorn, Django, nginx.
+#
+# ROLE ORDER IS NOT ARBITRARY:
+#
+#   redis      before django, so the cache exists when the app starts
+#   gunicorn   installs the systemd socket and service units, but the service
+#              cannot START until django has created the virtualenv
+#   django     code, virtualenv, .env, migrations, collectstatic — this is what
+#              makes the gunicorn unit runnable
 #   nginx      last, so it never proxies to a socket that does not exist yet
 #
-# See docs/roles.md for implementation status and roles/<name>/README.md for
-# what each one is intended to do.
+# On a FIRST run the gunicorn role reports that the service could not start.
+# That is expected and it says so: the virtualenv does not exist until django
+# has run. The django role reloads gunicorn when it finishes.
+#
+# PostgreSQL must already be reachable — run playbooks/database.yml first. The
+# django role checks and fails with a message naming the likely cause rather
+# than a psycopg2 traceback.
 
 - name: "Phase 4 — application platform"
   hosts: web
@@ -27,8 +34,24 @@
           - ansible_python_version is version('3.9', '>=')
         fail_msg: >-
           Python is missing or too old on {{ inventory_hostname }}. Run
-          bootstrap.yml before deploying the application platform.
+          playbooks/bootstrap.yml before deploying the application platform.
         success_msg: "Python {{ ansible_python_version }} present"
+      tags: [always]
+
+    - name: Confirm the TLS certificate exists
+      ansible.builtin.stat:
+        path: "/etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt"
+      register: platform_cert
+      tags: [always]
+
+    - name: Warn about a missing certificate
+      ansible.builtin.debug:
+        msg: >-
+          No TLS certificate at
+          /etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt. nginx will
+          not start without it. Run playbooks/networking.yml --tags certificates
+          first.
+      when: not platform_cert.stat.exists
       tags: [always]
 
   roles:
@@ -43,3 +66,22 @@
 
     - role: nginx
       tags: [nginx]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 4 complete on {{ inventory_hostname }}."
+          - ""
+          - "Verify, in this order — each rules out a layer:"
+          - "  sudo -u www-data curl --unix-socket /run/gunicorn/gunicorn.sock http://localhost/healthz/"
+          - "      ^ gunicorn alone, as nginx's user. Fails = socket permissions."
+          - "  curl -k https://{{ nginx_server_name | default('platform.' ~ jengasec_domain) }}/healthz/"
+          - "      ^ the whole stack. Expect {\"status\": \"ok\"}."
+          - ""
+          - "Then create the first admin account, by hand:"
+          - "  sudo -u {{ app_user | default('jengasec') }} {{ app_venv_dir | default('/opt/jengasec/venv') }}/bin/python \\"
+          - "      {{ app_source_dir | default('/opt/jengasec/app') }}/manage.py createsuperuser"
+          - ""
+          - "Run this playbook a SECOND time — it must report zero changed tasks."
+      tags: [always]

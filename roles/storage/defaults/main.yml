@@ -1,18 +1,81 @@
 ---
 # Defaults for the `storage` role — Phase 8.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  A DELIBERATELY NARROW ROLE.                                              │
+# │                                                                           │
+# │  This role owns MOUNT POINTS, fstab entries, and disk-space guards.       │
+# │  Nothing else.                                                            │
+# │                                                                           │
+# │  The application directories already have two owners: `django` creates    │
+# │  them and `filesystem-security` enforces their modes. A third role        │
+# │  chowning the same paths is exactly the collision the house rules forbid  │
+# │  — the result would depend on which role ran last.                        │
+# │                                                                           │
+# │  The *_dir variables below are here for reference, so a mount can be      │
+# │  pointed at the right place. The role does not chown them.                │
+# └───────────────────────────────────────────────────────────────────────────┘
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
+# Off. On three servers with local disks there is nothing to mount, and an
+# empty mount list makes this a no-op anyway — but off is honest about that.
 storage_enabled: false
 
-# list of dicts: src, path, fstype, opts
+storage_packages:
+  - parted
+  - e2fsprogs
+  - quota
+
+# ── Mounts ──────────────────────────────────────────────────────────────────
+# Fields: src, path, fstype, opts, state.
+#
+# src can be a device, but prefer UUID= or LABEL=. Device names are not stable:
+# add a disk and yesterday's /dev/sdb becomes /dev/sdc, and the wrong filesystem
+# mounts over your media directory at boot.
+#
+#   - src: "UUID=1234-abcd"
+#     path: "/opt/jengasec/app/media"
+#     fstype: ext4
+#     opts: "defaults,noatime,nodev,nosuid,noexec"
 storage_mounts: []
-storage_media_dir: "{{ app_media_dir }}"
-storage_static_dir: "{{ app_static_dir }}"
-storage_log_dir: "{{ app_log_dir }}"
-# group-readable, never world-readable
-storage_dir_mode: "0750"
+
+# Sensible defaults for a data volume:
+#   noatime  no write on every read — meaningful on a media directory
+#   nodev    no device files
+#   nosuid   no setuid binaries
+#   noexec   nothing executes from it
+#
+# noexec on the media volume matters here specifically: it holds files uploaded
+# by competitors.
+storage_default_mount_opts: "defaults,noatime,nodev,nosuid,noexec"
+
+# ── Reference paths ─────────────────────────────────────────────────────────
+# Owned by `django` and `filesystem-security`. Listed so a mount can target
+# them; NOT chowned by this role.
+storage_media_dir: "{{ app_media_dir | default('/opt/jengasec/app/media') }}"
+storage_static_dir: "{{ app_static_dir | default('/opt/jengasec/app/staticfiles') }}"
+storage_log_dir: "{{ app_log_dir | default('/var/log/jengasec') }}"
+
+# ── Quotas ──────────────────────────────────────────────────────────────────
+# Only useful on a dedicated filesystem — quotas apply per filesystem, not per
+# directory, so enabling this without a separate media volume limits the whole
+# root filesystem instead.
 storage_quota_enabled: false
+storage_quota_mount: "{{ storage_media_dir }}"
+storage_quota_user: "{{ app_user | default('jengasec') }}"
+storage_quota_soft_mb: 8192
+storage_quota_hard_mb: 10240
+
+# ── Disk guards ─────────────────────────────────────────────────────────────
+# Reported on every run. The cron role checks the same thing on a schedule and
+# mails; Prometheus alerts on it. Three overlapping checks on the failure most
+# likely to take a small server down is not excessive.
+storage_check_paths:
+  - /
+  - /var
+  - "{{ storage_media_dir }}"
+storage_warn_percent: "{{ os_disk_usage_warn_percent | default(85) }}"
+
+# Refuse to mount over a directory that already has files in it. The mount
+# succeeds, the old contents vanish from view, and they come back only when it
+# is unmounted — which nobody thinks to try.
+storage_refuse_nonempty_mountpoint: true

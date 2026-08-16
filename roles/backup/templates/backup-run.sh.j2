@@ -1,0 +1,160 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# JengaSec backup — pulls from the source hosts, compresses, encrypts, rotates.
+#
+# PULLS. The source hosts have no route into this one. A compromised web host
+# cannot delete its own backups, which is the first thing ransomware tries.
+#
+# Silence means success. Anything printed reaches a human through the timer's
+# OnFailure unit.
+#
+# Run by hand:  sudo -u {{ backup_user }} /usr/local/sbin/jengasec-backup
+
+set -uo pipefail
+
+STAMP=$(date +%Y%m%d-%H%M%S)
+TODAY=$(date +%Y%m%d)
+DAILY="{{ backup_daily_dir }}/${TODAY}"
+WORK="{{ backup_work_dir }}/${STAMP}"
+LOG="{{ backup_log_dir }}/backup.log"
+SSH_OPTS="{{ backup_ssh_opts }} -i {{ backup_ssh_key }}"
+FAILURES=0
+
+log() { printf '%s  %s\n' "$(date -Is)" "$*" >> "$LOG"; }
+fail() { printf 'BACKUP FAILURE: %s\n' "$*"; log "FAILURE: $*"; FAILURES=$((FAILURES + 1)); }
+
+log "=== backup starting (${STAMP}) ==="
+
+# ── Disk guard ──────────────────────────────────────────────────────────────
+# A full backup partition on this host also takes out Prometheus, which shares
+# it. Refuse to start rather than fill the disk halfway through.
+free_pct=$(df -P "{{ backup_root }}" | awk 'NR==2 {print 100 - $5+0}' | tr -d '%')
+if [ "${free_pct:-0}" -lt {{ backup_min_free_percent }} ]; then
+    fail "only ${free_pct}% free on {{ backup_root }} (need {{ backup_min_free_percent }}%). Not starting."
+    exit 1
+fi
+
+mkdir -p "$WORK" "$DAILY"
+chmod 700 "$WORK" "$DAILY"
+
+# Always clean up the working directory, including on an early exit — a failed
+# run must not leave an unencrypted dump lying around.
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+# ── Encrypt and store ───────────────────────────────────────────────────────
+store() {
+    local src="$1" name="$2"
+{% if backup_encrypt %}
+    # --trust-model always: there is no human to answer a trust prompt inside a
+    # timer, and the key was chosen deliberately by this role.
+    if gpg --batch --yes --trust-model always \
+           --recipient "{{ backup_gpg_recipient }}" \
+           --output "${DAILY}/${name}.gpg" --encrypt "$src" 2>>"$LOG"; then
+        chmod 600 "${DAILY}/${name}.gpg"
+        log "stored ${name}.gpg ($(du -h "${DAILY}/${name}.gpg" | cut -f1))"
+    else
+        fail "GPG encryption failed for ${name}"
+        return 1
+    fi
+{% else %}
+    # UNENCRYPTED — backup_encrypt is false. This archive holds submissions and
+    # judge scores in the clear on a shared host.
+    mv "$src" "${DAILY}/${name}"
+    chmod 600 "${DAILY}/${name}"
+    log "stored ${name} UNENCRYPTED ($(du -h "${DAILY}/${name}" | cut -f1))"
+{% endif %}
+}
+
+# ── Sources ─────────────────────────────────────────────────────────────────
+{% for source in backup_sources %}
+
+# ── {{ source.name }} ({{ source.type }} from {{ source.host }})
+{% if source.type == 'pg_dump' %}
+log "dumping {{ source.database }} from {{ source.host }}"
+
+# -Fc is PostgreSQL's custom format: compressed, and pg_restore can extract a
+# single table from it. A plain SQL dump is all or nothing.
+#
+# The dump is written to this host's stdout over SSH, so it never touches the
+# database server's disk — nothing to clean up there, and no window where an
+# unencrypted copy sits on the machine most exposed to the network.
+if ssh $SSH_OPTS "{{ backup_user }}@{{ hostvars[source.host]['ansible_host'] | default(source.host) }}" \
+       "pg_dump -Fc -Z0 {{ source.database }}" > "${WORK}/{{ source.name }}.dump" 2>>"$LOG"; then
+
+    if [ -s "${WORK}/{{ source.name }}.dump" ]; then
+        {{ backup_compression }} -c "${WORK}/{{ source.name }}.dump" > "${WORK}/{{ source.name }}.dump.gz" 2>>"$LOG"
+        rm -f "${WORK}/{{ source.name }}.dump"
+        store "${WORK}/{{ source.name }}.dump.gz" "{{ source.name }}-${STAMP}.dump.gz"
+    else
+        # An empty dump usually means pg_dump printed an error to stderr and
+        # exited 0 through the pipe. Catching it here is the difference between
+        # a backup and a zero-byte file nobody checks.
+        fail "{{ source.name }}: dump is empty"
+    fi
+else
+    fail "{{ source.name }}: pg_dump from {{ source.host }} failed"
+fi
+{% elif source.type == 'rsync' %}
+log "syncing {{ source.path }} from {{ source.host }}"
+
+# --numeric-ids preserves ownership without needing matching accounts here.
+# No --delete: this is a pull into a dated directory, not a mirror.
+if rsync -az --numeric-ids --timeout=300 \
+         -e "ssh $SSH_OPTS" \
+         "{{ backup_user }}@{{ hostvars[source.host]['ansible_host'] | default(source.host) }}:{{ source.path }}/" \
+         "${WORK}/{{ source.name }}/" >>"$LOG" 2>&1; then
+
+    tar -C "${WORK}" -c{{ 'z' if backup_compression == 'gzip' else 'j' }}f \
+        "${WORK}/{{ source.name }}.tar.gz" "{{ source.name }}" 2>>"$LOG"
+    rm -rf "${WORK}/{{ source.name }}"
+    store "${WORK}/{{ source.name }}.tar.gz" "{{ source.name }}-${STAMP}.tar.gz"
+else
+    fail "{{ source.name }}: rsync from {{ source.host }} failed"
+fi
+{% endif %}
+{% endfor %}
+
+# ── Promote to weekly and monthly ───────────────────────────────────────────
+# COPIED, not moved. A promotion must never remove the daily it came from, or
+# Sunday's backup would vanish from the daily tier the moment it is promoted.
+
+if [ "$(date +%u)" = "{{ backup_weekly_on }}" ]; then
+    cp -a "$DAILY" "{{ backup_weekly_dir }}/${TODAY}" 2>>"$LOG" && log "promoted ${TODAY} to weekly"
+fi
+
+if [ "$(date +%d)" = "{{ '%02d' | format(backup_monthly_on) }}" ]; then
+    cp -a "$DAILY" "{{ backup_monthly_dir }}/${TODAY}" 2>>"$LOG" && log "promoted ${TODAY} to monthly"
+fi
+
+# ── Retention ───────────────────────────────────────────────────────────────
+# Deletes by COUNT, not by age. Age-based pruning on a host whose backups have
+# been failing for a fortnight deletes the last good ones it has.
+prune() {
+    local dir="$1" keep="$2"
+    local count
+    count=$(find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    if [ "$count" -gt "$keep" ]; then
+        find "$dir" -mindepth 1 -maxdepth 1 -type d -print0 \
+        | sort -z \
+        | head -z -n "$(( count - keep ))" \
+        | xargs -0 -r rm -rf
+        log "pruned $(( count - keep )) from $(basename "$dir") (keeping $keep)"
+    fi
+}
+
+prune "{{ backup_daily_dir }}" {{ backup_retention_daily }}
+prune "{{ backup_weekly_dir }}" {{ backup_retention_weekly }}
+prune "{{ backup_monthly_dir }}" {{ backup_retention_monthly }}
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+total=$(du -sh "{{ backup_root }}" 2>/dev/null | cut -f1)
+log "=== backup finished: ${FAILURES} failure(s), {{ backup_root }} now ${total} ==="
+
+if [ "$FAILURES" -gt 0 ]; then
+    printf '%d source(s) failed. See %s\n' "$FAILURES" "$LOG"
+    exit 1
+fi
+
+exit 0

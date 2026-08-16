@@ -3,7 +3,7 @@ galaxy_info:
   role_name: monitoring
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: Prometheus, Grafana, and node_exporter.
+  description: Prometheus, node_exporter and Grafana.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,7 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - monitoring
+    - prometheus
 
 dependencies: []

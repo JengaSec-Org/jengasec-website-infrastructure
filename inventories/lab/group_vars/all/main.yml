@@ -1,0 +1,130 @@
+---
+# Lab-wide variables.
+#
+# Only what genuinely differs from production belongs here — everything else
+# should be identical, or the lab stops predicting production.
+#
+# Two things differ, and both for real reasons:
+#   SIZING       1.5 GB VMs, not 8 GB and 4 GB
+#   CREDENTIALS  nothing here needs a real domain, a Cloudflare account, or a
+#                GPG key you have to protect
+
+jengasec_org: "Strathmore Cybersecurity Club"
+jengasec_domain: jengasec.lab
+jengasec_environment: lab
+
+# The VirtualBox host-only network. The host itself is 192.168.56.1.
+jengasec_network_cidr: "192.168.56.0/24"
+
+# No gateway on the host-only network — VirtualBox does not put one there, and
+# the default route belongs to the NAT adapter. Empty rather than wrong.
+jengasec_network_gateway: ""
+
+# Not used in the lab: cloudflare_enabled is false. Present so the variable
+# resolves and the split-horizon templates render.
+jengasec_public_domain: jengasec.example
+
+common_timezone: "Africa/Nairobi"
+common_locale: "en_US.UTF-8"
+common_managed_banner: >-
+  Managed by Ansible — jengasec-website-infrastructure (LAB).
+  This is a throwaway VM. Local edits WILL be overwritten.
+
+# ── SSH ─────────────────────────────────────────────────────────────────────
+ssh_port: 22
+ssh_allow_groups:
+  - sudo
+  - jengasec
+
+users_service_accounts:
+  - name: jengasec
+    comment: "JengaSec administrator"
+    groups: [sudo, adm]
+    shell: /bin/bash
+    system: false
+    sudo_nopasswd: false
+
+  - name: deploy
+    comment: "Application deployment account"
+    groups: [jengasec]
+    shell: /bin/bash
+    system: false
+    sudo_nopasswd: true
+    sudo_commands:
+      - "/usr/bin/systemctl restart gunicorn"
+      - "/usr/bin/systemctl reload gunicorn"
+      - "/usr/bin/systemctl restart nginx"
+
+  - name: backup
+    comment: "Backup service account"
+    groups: []
+    shell: /usr/sbin/nologin
+    system: true
+    sudo_nopasswd: false
+
+  - name: monitoring
+    comment: "Prometheus node_exporter account"
+    groups: []
+    shell: /usr/sbin/nologin
+    system: true
+    sudo_nopasswd: false
+
+# The key you generated on the control node VM. Copy its .pub into
+# roles/users/files/ssh-keys/ and name it here.
+users_admin_ssh_keys:
+  - lab-control.pub
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+firewall_rules_common:
+  - port: "{{ ssh_port }}"
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "SSH from the host-only network"
+
+# ── Sizing ──────────────────────────────────────────────────────────────────
+# 1.5 GB VMs. These override the role defaults, which assume real hardware.
+#
+# This matters beyond the lab: it is the same exercise as moving a service to a
+# different machine. Memory settings are a FRACTION of RAM, and the fractions
+# are what you carry across — not the numbers.
+os_swap_enabled: true
+os_swap_size_mb: 1024
+
+# ── Application paths ───────────────────────────────────────────────────────
+app_name: jengasec
+app_user: jengasec
+app_group: jengasec
+app_root: "/opt/jengasec"
+app_source_dir: "{{ app_root }}/app"
+app_venv_dir: "{{ app_root }}/venv"
+app_static_dir: "{{ app_source_dir }}/staticfiles"
+app_media_dir: "{{ app_source_dir }}/media"
+app_log_dir: "/var/log/jengasec"
+app_repo_url: "https://github.com/JengaSec-Org/jengasec-competition-platform.git"
+app_repo_branch: main
+
+# ── Switched off in the lab, and why ────────────────────────────────────────
+
+# Needs a Cloudflare account, a real domain, and a tunnel token. Turn it on
+# only if you actually want to test the tunnel — it works fine from a VM.
+cloudflare_enabled: false
+
+# Nothing to mount, and MinIO is a pinned .deb whose updates you would own.
+storage_enabled: false
+minio_enabled: false
+
+# One web host. nginx balances already.
+loadbalancer_enabled: false
+
+# Rules become immutable until reboot — painful while iterating.
+# Worth turning on ONCE at the end to see it work, then reverting the snapshot.
+audit_immutable: false
+
+# Off until every key you want is in roles/users/files/ssh-keys/.
+users_ssh_exclusive: false
+
+# ── Left ON deliberately ────────────────────────────────────────────────────
+# The backup role is the one most worth exercising here: the pull key, the
+# encryption, and the restore are all things you want to have done once before
+# they matter.
+backup_enabled: true

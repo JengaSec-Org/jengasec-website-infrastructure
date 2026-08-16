@@ -18,7 +18,8 @@ ANSIBLE_ARGS  ?=
 RUN = ansible-playbook -i $(INVENTORY) --limit $(LIMIT) $(ANSIBLE_ARGS)
 
 .PHONY: help lint syntax structure check preflight ping facts \
-        bootstrap networking security platform database site \
+        bootstrap networking security platform database monitoring \
+        backup storage cloudflare deploy site \
         vault-edit vault-view clean
 
 help:
@@ -36,8 +37,13 @@ help:
 	@echo "    make bootstrap     Phase 1  base OS"
 	@echo "    make networking    Phase 2  networking, DNS, DHCP, firewall  (SEE DOCS)"
 	@echo "    make security      Phase 3  hardening"
-	@echo "    make platform      Phase 4  application platform (stubs)"
-	@echo "    make database      Phase 5  PostgreSQL (stub)"
+	@echo "    make database      Phase 5  PostgreSQL"
+	@echo "    make platform      Phase 4  Redis, gunicorn, Django, nginx"
+	@echo "    make monitoring    Phase 7  logging, Prometheus, Grafana"
+	@echo "    make backup        Phase 10 encrypted pull backups"
+	@echo "    make storage       Phase 8  mounts, object storage (both off)"
+	@echo "    make cloudflare    Phase 9  tunnel — READ docs/runbook.md first"
+	@echo "    make deploy        ship a revision to a running platform"
 	@echo "    make site          everything, in phase order"
 	@echo ""
 	@echo "  Secrets"
@@ -86,6 +92,25 @@ platform:
 
 database:
 	$(RUN) $(PLAYBOOK_DIR)/database.yml
+
+monitoring:
+	$(RUN) $(PLAYBOOK_DIR)/monitoring.yml
+
+backup:
+	$(RUN) $(PLAYBOOK_DIR)/backup.yml
+
+storage:
+	$(RUN) $(PLAYBOOK_DIR)/storage.yml
+
+# Exposes the platform to the internet. Read docs/runbook.md — the Cloudflare
+# account, zone, tunnel and token must exist before this can do anything.
+cloudflare:
+	$(RUN) $(PLAYBOOK_DIR)/cloudflare.yml
+
+# Pin the revision for a real release:  make deploy REV=v1.0.0
+REV ?= HEAD
+deploy:
+	$(RUN) -e deployment_revision=$(REV) $(PLAYBOOK_DIR)/deployment.yml
 
 site:
 	$(RUN) site.yml

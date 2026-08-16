@@ -1,0 +1,81 @@
+; {{ common_managed_banner }}
+;
+; Grafana on {{ inventory_hostname }}.
+; Contains the admin password — mode 0640, group grafana.
+
+[server]
+protocol = http
+http_addr = {{ grafana_bind }}
+http_port = {{ grafana_port }}
+domain = {{ grafana_domain }}
+root_url = http://{{ grafana_domain }}:{{ grafana_port }}/
+
+; TLS is not terminated here. Grafana listens on the LAN, and the firewall rule
+; in group_vars/monitoring restricts it to the competition network. Put it
+; behind nginx if it ever needs to be reachable from outside.
+enforce_domain = false
+
+[security]
+admin_user = {{ grafana_admin_user }}
+admin_password = {{ grafana_admin_password }}
+
+; Regenerated per host. The default is a well-known constant, and it signs the
+; session cookies.
+secret_key = {{ (grafana_admin_password ~ inventory_hostname) | hash('sha256') | truncate(32, true, '') }}
+
+disable_gravatar = true
+cookie_secure = false          ; no TLS on this listener yet
+cookie_samesite = lax
+content_security_policy = true
+
+; Grafana in an iframe on another site is a clickjacking route.
+allow_embedding = false
+
+[users]
+; No self-registration. Accounts are created by an admin.
+allow_sign_up = false
+allow_org_create = false
+auto_assign_org = true
+auto_assign_org_role = Viewer
+
+[auth.anonymous]
+; Off. The dashboards show service health, hostnames, and traffic patterns —
+; useful reconnaissance for anyone probing the competition network.
+enabled = {{ 'true' if grafana_anonymous_access else 'false' }}
+
+[auth.basic]
+enabled = true
+
+[analytics]
+; Off. Grafana otherwise phones home with usage statistics and checks for
+; updates. A competition server has no reason to make outbound calls nobody
+; asked for.
+reporting_enabled = {{ 'true' if grafana_analytics_enabled else 'false' }}
+check_for_updates = {{ 'true' if grafana_analytics_enabled else 'false' }}
+feedback_links_enabled = false
+
+[log]
+mode = console file
+level = info
+
+[paths]
+data = /var/lib/grafana
+logs = /var/log/grafana
+plugins = /var/lib/grafana/plugins
+provisioning = /etc/grafana/provisioning
+
+[dashboards]
+; Reload provisioned dashboards from disk every 10s, so a dashboard added by
+; Ansible appears without restarting Grafana.
+min_refresh_interval = 5s
+
+[alerting]
+; Prometheus owns the alert rules — see rules/jengasec.yml. Two alerting systems
+; over the same metrics means two places to look and two to keep in step.
+enabled = false
+
+[unified_alerting]
+enabled = false
+
+[plugins]
+allow_loading_unsigned_plugins =

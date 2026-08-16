@@ -29,6 +29,14 @@ vault_redis_password: "CHANGE_ME"
 # ── Grafana ─────────────────────────────────────────────────────────────────
 vault_grafana_admin_password: "CHANGE_ME"
 
+# ── HAProxy stats page (Phase 6, role disabled by default) ──────────────────
+# The stats page shows every backend, its health and its traffic — a complete
+# map of the infrastructure. The role warns if this is left empty.
+vault_haproxy_stats_password: "CHANGE_ME"
+
+# ── MinIO (Phase 8, role is a stub) ─────────────────────────────────────────
+vault_minio_root_password: "CHANGE_ME"
+
 # ── SMTP (Django password-reset and notification email) ────────────────────
 vault_smtp_host: "smtp.example.com"
 vault_smtp_port: 587
@@ -48,8 +56,22 @@ vault_ca_passphrase: "CHANGE_ME"
 # ── Backup encryption ───────────────────────────────────────────────────────
 vault_backup_gpg_passphrase: "CHANGE_ME"
 
-# ── Cloudflare (Phase 9, role currently a stub) ─────────────────────────────
+# ── Cloudflare ──────────────────────────────────────────────────────────────
+# THREE separate values, and the two tokens are NOT interchangeable.
+#
+# The tunnel token authenticates this host as the tunnel. Anyone holding it can
+# serve traffic for your public hostname.
+#   Zero Trust > Networks > Tunnels > (your tunnel) > Configure
+vault_cloudflare_tunnel_token: "CHANGE_ME"
+
+# A separate API token for managing Access policies. Needs
+# "Access: Apps and Policies — Edit". The tunnel token has no Access rights, and
+# using one where the other is needed fails with an unhelpful 403.
+#   My Profile > API Tokens > Create Token
 vault_cloudflare_api_token: "CHANGE_ME"
+
+# Dashboard, right-hand sidebar.
+vault_cloudflare_account_id: "CHANGE_ME"
 vault_cloudflare_zone_id: "CHANGE_ME"
 
 # ── DNS ─────────────────────────────────────────────────────────────────────

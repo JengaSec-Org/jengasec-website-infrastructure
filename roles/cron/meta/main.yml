@@ -3,7 +3,7 @@ galaxy_info:
   role_name: cron
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: Scheduled maintenance jobs.
+  description: Scheduled maintenance — certificate expiry, disk checks, cleanup.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,6 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - cron
 
 dependencies: []

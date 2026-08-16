@@ -1,40 +1,265 @@
 ---
 # minio — Phase 8
-# S3-compatible object storage for submissions at scale.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Install the MinIO server and client
-#   - Create buckets, policies, and service users
-#   - TLS using the internal CA
-#   - Bucket versioning and lifecycle rules
-#   - Replication to the backup host
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# S3-compatible object storage. Read the banner in defaults/main.yml before
+# enabling: local disk plus nginx already works, and this adds a service whose
+# updates you own by hand.
 
-- name: Refuse to run — the minio role is not implemented yet
-  ansible.builtin.fail:
+- name: Report that MinIO is disabled
+  ansible.builtin.debug:
     msg: >-
-      The 'minio' role is a Phase 8 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/minio/README.md.
-  when: not minio_enabled | bool
-  tags:
-    - minio
-    - stub
+      minio_enabled is false. The django role stores uploads on local disk and
+      nginx serves them from there, which works and is already backed up.
+      Object storage earns its place when submissions outgrow one disk or a
+      second application host needs the same files.
+  when: not (minio_enabled | bool)
+  tags: [minio, always]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install minio
-#   ansible.builtin.apt:
-#     name: "{{ minio_packages }}"
-#     state: present
-#   when: minio_enabled | bool
-#   notify: Restart minio
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Refuse to run without root credentials
+  ansible.builtin.assert:
+    that:
+      - minio_root_password | length >= 16
+    fail_msg: >-
+      vault_minio_root_password is unset or shorter than 16 characters. These
+      credentials reach every bucket and every object — including submissions.
+      Set it in the vault.
+    success_msg: "Root credentials present"
+  when: minio_enabled | bool
+  no_log: true
+  tags: [minio, always]
+
+- name: Refuse to bind to all interfaces
+  ansible.builtin.assert:
+    that:
+      - "'0.0.0.0' not in (minio_bind | string)"
+    fail_msg: >-
+      minio_bind is '{{ minio_bind }}'. The console is a full administrative
+      interface — create buckets, browse objects, mint access keys. Bind it to
+      the private address.
+    success_msg: "Bound to {{ minio_bind }}"
+  when: minio_enabled | bool
+  tags: [minio, always]
+
+# The checksum ships as a placeholder because it changes with every release.
+# A wrong one fails the download loudly, which is the correct behaviour — but
+# it should fail with an explanation, not a bare hash mismatch.
+- name: Warn about the placeholder checksum
+  ansible.builtin.debug:
+    msg: >-
+      minio_deb_checksum still looks like the placeholder. Get the real one:
+      curl -sL {{ minio_deb_url }}.sha256sum
+      A checksum that does not match will fail the download with a bare hash
+      mismatch and no explanation.
+  when:
+    - minio_enabled | bool
+    - "'0f1e5c50e2e5d3e0a6b3e0f1d2c4b5a6' in minio_deb_checksum"
+  tags: [minio, always]
+
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Create the MinIO user
+  ansible.builtin.user:
+    name: "{{ minio_user }}"
+    group: "{{ minio_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ minio_data_dir }}"
+    create_home: false
+  when: minio_enabled | bool
+  tags: [minio, packages]
+
+- name: Create the MinIO group
+  ansible.builtin.group:
+    name: "{{ minio_group }}"
+    system: true
+  when: minio_enabled | bool
+  tags: [minio, packages]
+
+- name: Download the MinIO package
+  ansible.builtin.get_url:
+    url: "{{ minio_deb_url }}"
+    dest: "/tmp/minio.deb"
+    checksum: "{{ minio_deb_checksum }}"
+    mode: "0644"
+  when: minio_enabled | bool
+  tags: [minio, packages]
+
+- name: Install MinIO
+  ansible.builtin.apt:
+    deb: /tmp/minio.deb
+    state: present
+  when: minio_enabled | bool
+  tags: [minio, packages]
+
+- name: Install the MinIO client
+  ansible.builtin.get_url:
+    url: "{{ minio_client_url }}"
+    dest: /usr/local/bin/mc
+    mode: "0755"
+  when: minio_enabled | bool
+  tags: [minio, packages]
+
+# ── Directories ─────────────────────────────────────────────────────────────
+
+- name: Create the MinIO directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ minio_user }}"
+    group: "{{ minio_group }}"
+    mode: "0750"
+  loop:
+    - "{{ minio_data_dir }}"
+    - "{{ minio_config_dir }}"
+    - "{{ minio_config_dir }}/certs"
+  when: minio_enabled | bool
+  tags: [minio, directories]
+
+# ── TLS ─────────────────────────────────────────────────────────────────────
+# MinIO expects exactly these filenames in its certs directory.
+
+- name: Install the TLS certificate
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ minio_config_dir }}/certs/{{ item.dest }}"
+    remote_src: true
+    owner: "{{ minio_user }}"
+    group: "{{ minio_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: "{{ minio_tls_cert }}", dest: public.crt, mode: "0644" }
+    - { src: "{{ minio_tls_key }}", dest: private.key, mode: "0600" }
+  when:
+    - minio_enabled | bool
+    - minio_tls_enabled | bool
+  notify: Restart minio
+  tags: [minio, tls]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+- name: Write the MinIO environment
+  ansible.builtin.template:
+    src: minio.env.j2
+    dest: /etc/default/minio
+    owner: root
+    group: "{{ minio_group }}"
+    mode: "0640"
+  no_log: true
+  when: minio_enabled | bool
+  notify: Restart minio
+  tags: [minio, config]
+
+- name: Enable and start MinIO
+  ansible.builtin.systemd:
+    name: "{{ minio_service_name }}"
+    enabled: true
+    state: started
+  when: minio_enabled | bool
+  tags: [minio, service]
+
+- name: Apply pending MinIO changes
+  ansible.builtin.meta: flush_handlers
+  tags: [minio]
+
+- name: Wait for MinIO to answer
+  ansible.builtin.uri:
+    url: "http{{ 's' if minio_tls_enabled else '' }}://{{ minio_bind }}:{{ minio_api_port }}/minio/health/live"
+    validate_certs: false
+    timeout: 10
+  register: minio_health
+  retries: 10
+  delay: 3
+  until: (minio_health.status | default(0)) == 200
+  changed_when: false
+  failed_when: false
+  when: minio_enabled | bool
+  tags: [minio, verify]
+
+# ── Buckets ─────────────────────────────────────────────────────────────────
+
+- name: Register the local MinIO alias
+  ansible.builtin.command:
+    cmd: >-
+      mc --insecure alias set jengasec
+      http{{ 's' if minio_tls_enabled else '' }}://{{ minio_bind }}:{{ minio_api_port }}
+      {{ minio_root_user }} {{ minio_root_password }}
+  register: minio_alias
+  changed_when: "'added successfully' in (minio_alias.stdout | default(''))"
+  no_log: true
+  when:
+    - minio_enabled | bool
+    - (minio_health.status | default(0)) == 200
+  tags: [minio, buckets]
+
+- name: Create the buckets
+  ansible.builtin.command:
+    cmd: "mc --insecure mb --ignore-existing jengasec/{{ item.name }}"
+  loop: "{{ minio_buckets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: minio_mb
+  changed_when: "'created successfully' in (minio_mb.stdout | default(''))"
+  when:
+    - minio_enabled | bool
+    - (minio_health.status | default(0)) == 200
+  tags: [minio, buckets]
+
+# 'none' is private. A submissions bucket set public would put every uploaded
+# document on the open internet with a guessable URL.
+- name: Set the bucket policies
+  ansible.builtin.command:
+    cmd: "mc --insecure anonymous set {{ item.policy }} jengasec/{{ item.name }}"
+  loop: "{{ minio_buckets }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.policy }}"
+  changed_when: false
+  when:
+    - minio_enabled | bool
+    - (minio_health.status | default(0)) == 200
+    - item.policy != 'none'
+  tags: [minio, buckets]
+
+- name: Enable versioning
+  ansible.builtin.command:
+    cmd: "mc --insecure version enable jengasec/{{ item.name }}"
+  loop: "{{ minio_buckets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  when:
+    - minio_enabled | bool
+    - (minio_health.status | default(0)) == 200
+    - item.versioning | default(false)
+  tags: [minio, buckets]
+
+# Versioning without expiry means the bucket grows forever — on a spare box
+# that is how the disk fills, silently, months later.
+- name: Expire noncurrent versions
+  ansible.builtin.command:
+    cmd: >-
+      mc --insecure ilm rule add --noncurrent-expire-days
+      {{ minio_noncurrent_version_expiry_days }} jengasec/{{ item.name }}
+  loop: "{{ minio_buckets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  failed_when: false      # the rule may already exist
+  when:
+    - minio_enabled | bool
+    - minio_lifecycle_enabled | bool
+    - (minio_health.status | default(0)) == 200
+    - item.versioning | default(false)
+  tags: [minio, buckets]
+
+- name: Report the MinIO state
+  ansible.builtin.debug:
+    msg: >-
+      MinIO {{ 'is up' if (minio_health.status | default(0)) == 200 else 'did NOT start' }}
+      on {{ minio_bind }}:{{ minio_api_port }}, console
+      {{ minio_console_port }}, {{ minio_buckets | length }} bucket(s).
+      Updates are NOT automatic — this is a pinned .deb, so nothing will tell
+      you when a security release lands.
+  when: minio_enabled | bool
+  tags: [minio, verify]

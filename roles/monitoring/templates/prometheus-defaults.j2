@@ -1,0 +1,26 @@
+# {{ common_managed_banner }}
+#
+# Prometheus daemon flags — /etc/default/prometheus
+#
+# Retention and the listen address are COMMAND-LINE flags, not settings in
+# prometheus.yml. Looking for a retention setting in the config file is a
+# well-worn dead end, which is why it is spelled out here.
+
+ARGS="\
+--web.listen-address={{ prometheus_bind }}:{{ prometheus_port }} \
+--storage.tsdb.path={{ prometheus_data_dir }} \
+--storage.tsdb.retention.time={{ prometheus_retention_time }} \
+--storage.tsdb.retention.size={{ prometheus_retention_size }} \
+--web.enable-lifecycle"
+
+# Both retention caps are set deliberately.
+#
+# Time alone does not bound disk: adding an exporter multiplies the series
+# count, and 30 days of ten times the data is ten times the disk. Size alone
+# would keep data indefinitely on a quiet system.
+#
+# server3 also holds every backup. A monitoring system that fills the disk it
+# shares with the backups is worse than no monitoring system.
+#
+# --web.enable-lifecycle allows POST /-/reload, which is how the handler applies
+# config changes without dropping the scrape history a restart would interrupt.

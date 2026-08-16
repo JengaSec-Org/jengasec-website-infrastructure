@@ -19,7 +19,17 @@ iface {{ networking_interface }} inet dhcp
 iface {{ networking_interface }} inet static
     address {{ networking_address }}
     netmask {{ networking_netmask }}
+{% if networking_gateway | length > 0 %}
     gateway {{ networking_gateway }}
+{% else %}
+    # No gateway on purpose.
+    #
+    # A host has exactly ONE default route. This is a secondary interface — a
+    # management or data NIC — and the default route belongs to another one.
+    # Writing a gateway here would give the host two, and whichever ifupdown
+    # installs last wins. The usual symptom is that apt stops working after a
+    # reboot, with nothing in the logs pointing at the network config.
+{% endif %}
 {% if networking_mtu != 1500 %}
     mtu {{ networking_mtu }}
 {% endif %}

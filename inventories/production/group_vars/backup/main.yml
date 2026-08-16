@@ -1,7 +1,9 @@
 ---
 # Variables for the `backup` group — backup target (server3).
-# The `backup` role is a Phase 10 stub; these variables define its contract now
-# so the role can be written later without renaming anything.
+#
+# The backup host PULLS from server1 and server2. They have no route into it, so
+# a compromised web host cannot delete its own backups. See
+# roles/backup/README.md for the forced-command key this requires.
 
 firewall_rules_group:
   - port: 873

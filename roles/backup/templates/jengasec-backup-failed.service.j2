@@ -1,0 +1,32 @@
+# {{ common_managed_banner }}
+#
+# Runs when jengasec-backup or jengasec-backup-verify fails.
+#
+# Without this, a failing backup is visible only to whoever runs `journalctl`.
+# Nobody runs journalctl on a server that appears to be working — which is how a
+# backup job stops for six weeks and is discovered on the day it is needed.
+
+[Unit]
+Description=Report a failed JengaSec backup
+
+[Service]
+Type=oneshot
+
+# %i is the unit that failed, passed by OnFailure.
+ExecStart=/bin/bash -c '\
+  { echo "Backup job FAILED on $(hostname) at $(date -Is)."; \
+    echo ""; \
+    echo "Last 40 journal lines:"; \
+    journalctl -u jengasec-backup -u jengasec-backup-verify -n 40 --no-pager; \
+    echo ""; \
+    echo "Backups present:"; \
+    ls -1 {{ backup_daily_dir }} 2>/dev/null | tail -5; \
+  } | mail -s "JengaSec BACKUP FAILED on $(hostname)" {{ backup_mailto }} || \
+  logger -t jengasec-backup -p daemon.err "backup failed and mail could not be sent"'
+
+# If mail is not configured the logger fallback still records it at error level,
+# which the monitoring role's journal scraping can pick up. A failure notice
+# that itself fails silently would be the worst of both worlds.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jengasec-backup-failed

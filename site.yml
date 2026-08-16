@@ -55,3 +55,12 @@
 # ── Phase 10 — Backup ───────────────────────────────────────────────────────
 - name: Import Phase 10 — backup
   ansible.builtin.import_playbook: playbooks/backup.yml
+
+# ── Phase 9 — Public access ─────────────────────────────────────────────────
+# Last, deliberately. The tunnel exposes the platform to the internet, and it
+# should only do that once everything before it is working and verified.
+#
+# Off by default — see roles/cloudflare/defaults/main.yml for the Cloudflare
+# prerequisites, which Ansible cannot create.
+- name: Import Phase 9 — Cloudflare Tunnel
+  ansible.builtin.import_playbook: playbooks/cloudflare.yml

@@ -1,12 +1,30 @@
 ---
 # Phase 10 — Backup and disaster recovery
 #
-# STATUS: stub. See roles/backup/README.md.
+#   make backup
+#   ansible-playbook -i inventories/production playbooks/backup.yml
 #
-# The one thing worth saying now: a backup that has never been restored is a
-# hope, not a backup. `backup_verify_enabled` in group_vars/backup exists so
-# that restore verification is part of the role from the start rather than
-# something added after the first time it is needed.
+# Pulls the database, submissions and configuration to server3, encrypts them,
+# rotates three tiers, and verifies a restore monthly.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  IT PULLS. The source hosts have no route into the backup host.           │
+# │                                                                           │
+# │  A compromised web host cannot delete its own backups — with a push model │
+# │  it can, and deleting the backups is the first thing ransomware does.     │
+# │                                                                           │
+# │  The cost is an SSH path from server3 to the others: a forced-command key │
+# │  that can run one read-only rsync and nothing else. The backup role       │
+# │  generates it and prints the line; the `users` role installs it on the    │
+# │  source hosts once users_backup_pull_key is set.                          │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# FIRST RUN ORDER:
+#   1. this playbook — generates the key on server3 and prints it
+#   2. paste it into users_backup_pull_key, set users_backup_pull_enabled: true
+#   3. re-run playbooks/bootstrap.yml --tags backup-key to install it on
+#      server1 and server2
+#   4. this playbook again — now the pull actually works
 
 - name: "Phase 10 — backup"
   hosts: backup
@@ -17,5 +35,31 @@
     - role: backup
       tags: [backup]
 
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Phase 10 complete on {{ inventory_hostname }}."
+          - ""
+          - "Do this ONCE, by hand, before the competition — everything else in"
+          - "the role is machinery around this single question:"
+          - "  sudo -u backup /usr/local/sbin/jengasec-backup"
+          - "  sudo -u backup /usr/local/sbin/jengasec-backup-verify"
+          - ""
+          - "A backup that has never been restored is a hope, not a backup."
+          - ""
+          - "  jengasec-restore --list"
+          - "  systemctl list-timers jengasec-backup.timer"
+      tags: [always]
+
+- name: "Phase 7 — scheduled maintenance"
+  hosts: infra
+  become: true
+  gather_facts: true
+
+  roles:
+    # Certificate expiry, disk checks, temp cleanup. Every host, not just the
+    # backup target — the certificate check is currently the only thing watching
+    # expiry anywhere.
     - role: cron
       tags: [cron]

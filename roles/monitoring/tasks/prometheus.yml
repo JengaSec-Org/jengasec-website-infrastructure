@@ -1,0 +1,95 @@
+---
+# monitoring — Prometheus, on the `monitoring` host only.
+
+- name: Install Prometheus
+  ansible.builtin.apt:
+    name: "{{ prometheus_package }}"
+    state: present
+  tags: [monitoring, prometheus, packages]
+
+- name: Ensure the rules directory exists
+  ansible.builtin.file:
+    path: "{{ prometheus_config_dir }}/rules"
+    state: directory
+    owner: root
+    group: prometheus
+    mode: "0750"
+  tags: [monitoring, prometheus, config]
+
+# Written before prometheus.yml, because the config references the rule file and
+# promtool validates that it parses.
+- name: Write the alert rules
+  ansible.builtin.template:
+    src: prometheus-alerts.yml.j2
+    dest: "{{ prometheus_config_dir }}/rules/jengasec.yml"
+    owner: root
+    group: prometheus
+    mode: "0640"
+    validate: "promtool check rules %s"
+  notify: Reload prometheus
+  tags: [monitoring, prometheus, alerts]
+
+- name: Write the Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ prometheus_config_dir }}/prometheus.yml"
+    owner: root
+    group: prometheus
+    mode: "0640"
+    backup: true
+    validate: "promtool check config %s"
+  notify: Reload prometheus
+  tags: [monitoring, prometheus, config]
+
+# Debian's unit reads its flags from /etc/default. Retention and the listen
+# address are command-line arguments, not config-file settings — a detail that
+# sends people looking in prometheus.yml for a retention setting that is not
+# there.
+- name: Configure the Prometheus daemon flags
+  ansible.builtin.template:
+    src: prometheus-defaults.j2
+    dest: /etc/default/prometheus
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart prometheus
+  tags: [monitoring, prometheus, config]
+
+- name: Enable and start Prometheus
+  ansible.builtin.systemd:
+    name: "{{ prometheus_service }}"
+    enabled: true
+    state: started
+  tags: [monitoring, prometheus, service]
+
+- name: Apply pending Prometheus changes
+  ansible.builtin.meta: flush_handlers
+  tags: [monitoring, prometheus]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Query Prometheus for its targets
+  ansible.builtin.uri:
+    url: "http://{{ prometheus_bind }}:{{ prometheus_port }}/api/v1/targets"
+    return_content: true
+    timeout: 15
+  register: monitoring_targets
+  changed_when: false
+  failed_when: false
+  tags: [monitoring, prometheus, verify]
+
+# A target that is DOWN is the useful output here — it means the exporter is not
+# running, or the firewall rule in group_vars/monitored is not letting this host
+# through. Either way it is a monitoring system watching nothing.
+- name: Report target health
+  ansible.builtin.debug:
+    msg: >-
+      {{ (monitoring_targets.json.data.activeTargets | default([]))
+         | map(attribute='health') | list | length }} target(s):
+      {% for target in monitoring_targets.json.data.activeTargets | default([]) %}
+      {{ target.labels.instance | default('?') }}={{ target.health | default('?') }}
+      {% endfor %}
+      {{ '— any "down" means the exporter is not running or the firewall is
+          blocking this host.' if monitoring_targets.json is defined else
+         'Prometheus did not answer.' }}
+  tags: [monitoring, prometheus, verify]

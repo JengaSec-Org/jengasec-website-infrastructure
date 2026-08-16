@@ -57,6 +57,10 @@ networking_ipv6_enabled: false
 # a session that has already dropped, but it does mean a broken configuration
 # fails the play loudly instead of appearing to succeed.
 networking_verify_after_change: true
+
+# Defaults to the gateway. On a secondary interface with no gateway this is
+# empty and the check silently skips — set it to another host on the same
+# subnet instead, so the interface is still proven to work.
 networking_verify_target: "{{ networking_gateway }}"
 
 # ── Hostname resolution ─────────────────────────────────────────────────────

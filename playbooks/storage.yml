@@ -1,14 +1,20 @@
 ---
 # Phase 8 — Storage
 #
-# STATUS: both roles are stubs.
+#   ansible-playbook -i inventories/production playbooks/storage.yml
 #
-# `storage` covers filesystem layout and mount points and is worth implementing
-# early. `minio` is only needed if submission volume outgrows local disk —
-# object storage on a 4 GB server solves a problem this competition may never
-# have, so treat it as genuinely optional.
+# Both roles are implemented and both are OFF by default, deliberately.
+#
+# `storage` owns mount points and disk guards. With three servers on local disks
+# there is nothing to mount, so it is a no-op — but it still reports disk usage
+# on every run, which is worth having.
+#
+# `minio` is object storage. The django role already stores uploads on local
+# disk and nginx serves them from there; MinIO earns its place only when
+# submissions outgrow one disk or a second application host needs the same
+# files. It is also a pinned .deb, so its updates are yours to track.
 
-- name: "Phase 8 — storage"
+- name: "Phase 8 — filesystem layout"
   hosts: web
   become: true
   gather_facts: true

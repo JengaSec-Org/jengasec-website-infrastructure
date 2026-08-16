@@ -1,54 +1,116 @@
 # `storage`
 
-**Phase 8 · NOT YET IMPLEMENTED**
+**Phase 8 · Implemented, disabled by default**
 
-Filesystem layout, mount points, and permissions for application data.
+Mount points, fstab entries, quotas, and disk guards.
 
-## Status
+## A deliberately narrow role
 
-This role is a stub. Running it raises a failure rather than silently doing
-nothing — see `tasks/main.yml` for why.
+This role owns **mount points and nothing else**.
 
-## Planned responsibilities
+The application directories already have two owners: `django` creates them and
+`filesystem-security` enforces their modes. A third role chowning the same paths
+is exactly the collision the house rules forbid — the result would depend on
+which role ran last.
 
-- Create and own the media, static, and log directories
-- Mount additional volumes from storage_mounts
-- Enforce quotas where a directory could fill the disk
-- Set the retention policy for uploaded submissions
+`storage_media_dir` and friends are in the defaults so a mount can be *pointed
+at* them. The role does not chown them.
+
+| Concern | Owner |
+|---|---|
+| Mounts, fstab, quotas | **`storage`** |
+| Creating app directories | `django` |
+| Their ownership and modes | `filesystem-security` |
+| Journal size | `os` |
+| Log rotation | `logging` |
+
+## Off by default, and that is honest
+
+On three servers with local disks there is nothing to mount. An empty
+`storage_mounts` makes the role a no-op anyway — being explicit about that is
+better than pretending it does something.
+
+Disk usage is still reported on every run regardless.
+
+## Two guards worth having
+
+**It refuses to mount over a non-empty directory.** The mount succeeds, the
+existing files vanish from view, and they stay on the underlying filesystem
+consuming space — reappearing only on unmount, which nobody thinks to try
+because the symptom is "the uploads are gone".
+
+**It warns about `/dev/sdX` in fstab.** Device names are not stable: add a disk
+and yesterday's `/dev/sdb` becomes `/dev/sdc`. At boot either the wrong
+filesystem mounts over the media directory, or nothing mounts and the
+application quietly writes to the root disk instead. Use `UUID=` — find it with
+`blkid`.
+
+## Mount options
+
+```
+defaults,noatime,nodev,nosuid,noexec
+```
+
+`noexec` on the media volume is the one that matters here: it holds files
+uploaded by competitors, and nothing there should ever be executable.
+
+`noatime` avoids a metadata write on every read, which is worth having on a
+directory that judges browse repeatedly.
+
+## Quotas apply per filesystem
+
+`storage_quota_enabled` is off, and the role **refuses to enable it** unless the
+target is its own mount point.
+
+Quotas are a filesystem feature, not a directory one. Turning it on without a
+dedicated media volume would limit the whole root filesystem — emphatically not
+what anyone means by "cap the uploads directory".
+
+## Adding a volume
+
+```yaml
+storage_enabled: true
+storage_mounts:
+  - src: "UUID=1a2b3c4d-5e6f-7890-abcd-ef1234567890"
+    path: "/opt/jengasec/app/media"
+    fstype: ext4
+    opts: "defaults,noatime,nodev,nosuid,noexec"
+```
+
+Run the `django` and `filesystem-security` roles afterwards — a fresh filesystem
+mounts empty and owned by root, so ownership has to be re-applied.
 
 ## Variables
 
-Defined in `defaults/main.yml`; override in `group_vars/`, never by editing the
-role.
+| Variable | Default |
+|---|---|
+| `storage_enabled` | `false` |
+| `storage_mounts` | `[]` |
+| `storage_default_mount_opts` | `defaults,noatime,nodev,nosuid,noexec` |
+| `storage_quota_enabled` | `false` |
+| `storage_check_paths` | `/`, `/var`, media |
+| `storage_warn_percent` | `85` (from `os_disk_usage_warn_percent`) |
+| `storage_refuse_nonempty_mountpoint` | `true` |
 
-| Variable | Default | Notes |
-|---|---|---|
-| `storage_enabled` | `false` | Guard. Set true only once the tasks exist. |
-| `storage_mounts` | `[]` | list of dicts: src, path, fstype, opts |
-| `storage_media_dir` | `"{{ app_media_dir }}"` | — |
-| `storage_static_dir` | `"{{ app_static_dir }}"` | — |
-| `storage_log_dir` | `"{{ app_log_dir }}"` | — |
-| `storage_dir_mode` | `"0750"` | group-readable, never world-readable |
-| `storage_quota_enabled` | `false` | — |
+## Tags
 
-## Example play
+`storage`, `packages`, `mounts`, `quota`, `verify`
 
-```yaml
-- name: Configure storage
-  hosts: infra
-  become: true
-  roles:
-    - role: storage
-      tags: [storage]
+## Verifying
+
+```bash
+df -hT
+findmnt --verify
+cat /etc/fstab
+lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINT
 ```
 
-## Implementing this role
+`findmnt --verify` is the useful one — it checks fstab for entries that would
+fail at boot, which is otherwise something you discover during a reboot you
+were not expecting to be eventful.
 
-1. Fill in `defaults/main.yml` — every value the role needs, none of them literal in tasks.
-2. Write the templates in `templates/` as `.j2`, each starting with the managed banner.
-3. Write `tasks/main.yml`, referencing only variables.
-4. Add handlers for anything that needs a restart or reload.
-5. Delete the `fail` task and flip `storage_enabled` to `true`.
-6. Update the status table in [docs/roles.md](../../docs/roles.md).
-7. `make lint && make syntax`, then run twice against staging — the second run
-   must report zero changes.
+If quotas are on:
+
+```bash
+repquota -a
+```

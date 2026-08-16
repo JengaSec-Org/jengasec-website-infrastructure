@@ -37,6 +37,12 @@ vault_redis_password: "STAGING_CHANGE_ME"
 # ── Grafana ─────────────────────────────────────────────────────────────────
 vault_grafana_admin_password: "STAGING_CHANGE_ME"
 
+# ── HAProxy stats page (Phase 6, role disabled by default) ──────────────────
+vault_haproxy_stats_password: "STAGING_CHANGE_ME"
+
+# ── MinIO (Phase 8, role is a stub) ─────────────────────────────────────────
+vault_minio_root_password: "STAGING_CHANGE_ME"
+
 # ── SMTP ────────────────────────────────────────────────────────────────────
 # Point staging at a local catch-all, never at the real mail server. Otherwise a
 # test run emails real judges and team members.
@@ -59,8 +65,12 @@ vault_ca_passphrase: "STAGING_CHANGE_ME"
 # ── Backup encryption ───────────────────────────────────────────────────────
 vault_backup_gpg_passphrase: "STAGING_CHANGE_ME"
 
-# ── Cloudflare (Phase 9, role is a stub) ────────────────────────────────────
+# ── Cloudflare ──────────────────────────────────────────────────────────────
+# Use a SEPARATE tunnel from production. Sharing one means a staging deploy can
+# start serving traffic for the production hostname.
+vault_cloudflare_tunnel_token: "STAGING_CHANGE_ME"
 vault_cloudflare_api_token: "STAGING_CHANGE_ME"
+vault_cloudflare_account_id: "STAGING_CHANGE_ME"
 vault_cloudflare_zone_id: "STAGING_CHANGE_ME"
 
 # ── DNS ─────────────────────────────────────────────────────────────────────

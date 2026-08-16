@@ -1,0 +1,31 @@
+# {{ common_managed_banner }}
+#
+# node_exporter flags — /etc/default/prometheus-node-exporter
+#
+# Debian's package reads its arguments from here. Editing the unit file directly
+# would be overwritten on the next package upgrade.
+
+ARGS="\
+--web.listen-address={{ node_exporter_bind }}:{{ node_exporter_port }} \
+{% for collector in node_exporter_enabled_collectors %}
+--collector.{{ collector }} \
+{% endfor %}
+{% for collector in node_exporter_disabled_collectors %}
+--no-collector.{{ collector }} \
+{% endfor %}
+"
+
+# Bound to {{ node_exporter_bind }}, not 0.0.0.0.
+#
+# node_exporter publishes a detailed inventory of this host: kernel version,
+# every filesystem, every listening port, every systemd unit and its state. On
+# a competition network that is a reconnaissance gift, and it needs no
+# authentication to read. The firewall rule in group_vars/monitored restricts it
+# further, to the monitoring host alone.
+#
+# The systemd collector is enabled deliberately — it is what makes the
+# ServiceDown alert possible. It costs some CPU per scrape, which at a 30s
+# interval is not measurable here.
+#
+# mdadm, infiniband, nfs and nfsd are disabled: none of this hardware exists,
+# and each one logs an error per scrape when its files are missing.

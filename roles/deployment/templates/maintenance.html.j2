@@ -1,0 +1,44 @@
+{# {{ common_managed_banner }} #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JengaSec — brief maintenance</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: grid; place-items: center;
+    background: #080C08; color: #E6EFE7;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.6; padding: 2rem;
+  }
+  main { max-width: 30rem; text-align: center; }
+  h1 { font-size: 1.6rem; margin: 0 0 .75rem; letter-spacing: -.02em; }
+  p { color: #9DAD9F; margin: 0 0 1rem; }
+  .mark {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: .75rem; letter-spacing: .16em; text-transform: uppercase;
+    color: #00C853; margin-bottom: 1.5rem;
+  }
+  .rule { height: 2px; background: #00C853; width: 3rem; margin: 1.5rem auto; }
+</style>
+</head>
+<body>
+  <main>
+    <p class="mark">JengaSec {{ jengasec_environment | default('') | upper }}</p>
+    <h1>Back in a few minutes</h1>
+    <div class="rule"></div>
+    <p>
+      The platform is being updated. Nothing you have submitted is affected —
+      uploads and scores are stored separately and are not touched by a
+      deployment.
+    </p>
+    <p>
+      If this page is still here in fifteen minutes, something has gone wrong.
+      Please contact <strong>sucybersec@strathmore.edu</strong>.
+    </p>
+  </main>
+</body>
+</html>

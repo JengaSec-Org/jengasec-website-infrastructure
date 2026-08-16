@@ -1,0 +1,64 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# Warn before a TLS certificate expires.
+#
+# The internal CA issues {{ certificates_valid_days | default(365) }}-day certificates and NOTHING renews them
+# automatically. Without this check the first sign of expiry is the site
+# failing, during whatever is happening that day.
+#
+# Prometheus has a matching alert, but it needs the blackbox exporter which is
+# not deployed — so today this is the only thing watching.
+#
+# Output goes to cron, which mails it to {{ cron_mailto }}. Silence means
+# everything is fine; cron only mails when a job writes something.
+
+set -uo pipefail
+
+WARN_DAYS={{ cron_cert_check_warn_days }}
+WARN_SECONDS=$(( WARN_DAYS * 86400 ))
+NOW=$(date +%s)
+PROBLEMS=0
+
+CERTS=(
+{% for path in cron_cert_check_paths %}
+    "{{ path }}"
+{% endfor %}
+)
+
+for cert in "${CERTS[@]}"; do
+    [ -f "$cert" ] || continue
+
+    # -enddate gives "notAfter=Oct  5 12:00:00 2026 GMT"
+    end_date=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)
+    if [ -z "$end_date" ]; then
+        echo "CERTIFICATE UNREADABLE: $cert"
+        PROBLEMS=$(( PROBLEMS + 1 ))
+        continue
+    fi
+
+    end_epoch=$(date -d "$end_date" +%s 2>/dev/null) || {
+        echo "CERTIFICATE DATE UNPARSEABLE: $cert ($end_date)"
+        PROBLEMS=$(( PROBLEMS + 1 ))
+        continue
+    }
+
+    remaining=$(( end_epoch - NOW ))
+    days=$(( remaining / 86400 ))
+
+    if [ "$remaining" -lt 0 ]; then
+        echo "CERTIFICATE EXPIRED: $cert expired ${days#-} days ago ($end_date)"
+        echo "  The site is already failing for anyone who validates it."
+        echo "  Fix: re-run the certificates role."
+        PROBLEMS=$(( PROBLEMS + 1 ))
+    elif [ "$remaining" -lt "$WARN_SECONDS" ]; then
+        echo "CERTIFICATE EXPIRING: $cert expires in $days days ($end_date)"
+        echo "  Fix: ansible-playbook -i inventories/production \\"
+        echo "         playbooks/networking.yml --tags certificates --limit {{ inventory_hostname }}"
+        PROBLEMS=$(( PROBLEMS + 1 ))
+    fi
+done
+
+# Exit non-zero so a monitoring wrapper can also notice. cron itself only cares
+# about output, not the exit code.
+exit $(( PROBLEMS > 0 ? 1 : 0 ))

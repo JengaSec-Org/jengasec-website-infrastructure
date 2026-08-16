@@ -1,23 +1,102 @@
 ---
 # Defaults for the `backup` role — Phase 10.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  PULL, NOT PUSH.                                                          │
+# │                                                                           │
+# │  server3 reaches out to server1 and server2 and pulls. The source hosts   │
+# │  have no route into the backup host at all.                               │
+# │                                                                           │
+# │  That is the whole security argument: a compromised web host cannot       │
+# │  delete its own backups. With a push model it can, and deleting the       │
+# │  backups is the first thing ransomware does.                              │
+# │                                                                           │
+# │  The cost is an SSH path from server3 to the others — a forced-command    │
+# │  key that can run one read-only rsync and nothing else. See the `users`   │
+# │  role and this role's README.                                             │
+# └───────────────────────────────────────────────────────────────────────────┘
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-backup_enabled: false
+backup_enabled: true
 
-backup_root: "/srv/backup"
-# 02:00 daily, outside competition hours
-backup_schedule: "0 2 * * *"
+backup_packages:
+  - rsync
+  - gnupg
+  - postgresql-client-15      # pg_dump must match the server's major version
+
+# ── Layout ──────────────────────────────────────────────────────────────────
+backup_root: /srv/backup
+backup_daily_dir: "{{ backup_root }}/daily"
+backup_weekly_dir: "{{ backup_root }}/weekly"
+backup_monthly_dir: "{{ backup_root }}/monthly"
+backup_work_dir: "{{ backup_root }}/.work"
+backup_log_dir: /var/log/jengasec
+
+backup_user: backup
+backup_group: backup
+
+# ── SSH ─────────────────────────────────────────────────────────────────────
+# The key server3 uses to pull. Generated on server3 if absent; its public half
+# must then be installed on the source hosts as a forced-command entry — the
+# role prints it and tells you where it goes.
+backup_ssh_key: "/home/{{ backup_user }}/.ssh/id_ed25519"
+backup_ssh_opts: "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o BatchMode=yes"
+
+# ── Sources ─────────────────────────────────────────────────────────────────
+# Set in group_vars/backup. Fields: name, host, type (pg_dump | rsync),
+# database or path.
+backup_sources: []
+
+# ── Retention ───────────────────────────────────────────────────────────────
+# Three tiers. A weekly is promoted from Sunday's daily, a monthly from the 1st
+# — copied, not moved, so a promotion never removes the daily it came from.
 backup_retention_daily: 7
 backup_retention_weekly: 4
 backup_retention_monthly: 6
+backup_weekly_on: 7          # ISO weekday, 7 = Sunday
+backup_monthly_on: 1         # day of month
+
+# ── Compression and encryption ──────────────────────────────────────────────
 backup_compression: gzip
-# backups contain submissions and judge scores
+
+# GPG, and it is not optional theatre: this archive holds submission documents
+# and judge scores, sitting on a spare box that is also the monitoring server.
+# Anyone who gets a shell on server3 would otherwise have the whole competition.
 backup_encrypt: true
-# list of dicts: name, host, type, path or database
-backup_sources: []
-# an unrestored backup is a hope, not a backup
+backup_gpg_recipient: ""     # set in group_vars
+
+# The PUBLIC key to encrypt to, in roles/backup/files/. Encrypting to a public
+# key means the backup host cannot decrypt what it stores — the private key
+# lives somewhere else entirely, which is the point.
+backup_gpg_public_key: jengasec-backup.pub.asc
+
+# ── Schedule ────────────────────────────────────────────────────────────────
+# systemd timers, not cron. Persistent=true catches up a backup missed while the
+# host was down — precisely when you most want one to have run.
+backup_schedule: "02:00"
+backup_schedule_randomized_delay: "15m"
+
 backup_verify_enabled: true
+backup_verify_schedule: "*-*-01 03:00:00"     # first of the month
+
+# ── Verification ────────────────────────────────────────────────────────────
+# Restores the newest dump into a scratch database, counts the tables, drops it.
+#
+# A backup that has never been restored is a hope, not a backup. This is the
+# difference between believing you can recover and knowing it.
+backup_verify_host: server2
+backup_verify_scratch_db: jengasec_restore_check
+backup_verify_min_tables: 10        # fewer means the dump is truncated
+
+# ── Reporting ───────────────────────────────────────────────────────────────
+# Silence means success. Anything printed is mailed by the timer's OnFailure or
+# by cron, depending on how it ran.
+backup_mailto: "{{ cron_mailto | default('sucybersec@strathmore.edu') }}"
+
+# Fail the run if a backup is older than this. A backup job that quietly stopped
+# working weeks ago is the normal way this goes wrong.
+backup_max_age_hours: 30
+
+# ── Disk guard ──────────────────────────────────────────────────────────────
+# Refuse to start a backup that would fill the disk. A full backup partition on
+# server3 also takes out Prometheus, which shares it.
+backup_min_free_percent: 15

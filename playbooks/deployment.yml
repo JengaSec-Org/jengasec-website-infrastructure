@@ -1,22 +1,45 @@
 ---
 # Phase 7 — Application deployment
 #
-# STATUS: stub. See roles/deployment/README.md.
+#   ansible-playbook -i inventories/production playbooks/deployment.yml \
+#       -e deployment_revision=v1.0.0
 #
-# Distinct from platform.yml: that one BUILDS the platform (installs nginx,
-# creates the virtualenv, writes the units). This one ships a new revision onto
-# a platform that already exists — pull, migrate, collectstatic, reload, health
+# Distinct from platform.yml: that one BUILDS the platform — installs nginx,
+# creates the virtualenv, writes the units. This one ships a new revision onto a
+# platform that already exists: pull, migrate, collectstatic, reload, health
 # check, roll back if the check fails.
 #
-# Once implemented this is the playbook that runs most often, so it is the one
-# that most needs to be boring and reversible.
+# This is the playbook that runs most often, so it is the one that most needs to
+# be boring and reversible.
+#
+# PIN THE REVISION for a real release. The default of HEAD means "whatever main
+# happens to be", which is fine mid-development and wrong the week of the
+# competition, when you want to know exactly what is running.
 
 - name: "Phase 7 — deploy the application"
   hosts: web
   become: true
   gather_facts: true
-  serial: 1        # one host at a time, so a bad release cannot take out both
+
+  # One host at a time. With more than one web host, a bad release cannot take
+  # out both — the first one fails its health check and the play stops before
+  # touching the second.
+  serial: 1
 
   roles:
     - role: deployment
       tags: [deployment, deploy]
+
+  post_tasks:
+    - name: Report the release
+      ansible.builtin.debug:
+        msg:
+          - "Deployed to {{ inventory_hostname }}."
+          - "  cat {{ app_root | default('/opt/jengasec') }}/.deploy/releases.log"
+          - "  journalctl -t jengasec-deploy --since today"
+          - ""
+          - "To roll back, pin the previous SHA and skip migrations —"
+          - "going backwards, Django would otherwise try to apply migrations"
+          - "the older code does not have:"
+          - "  -e deployment_revision=<sha> -e deployment_run_migrations=false"
+      tags: [always]

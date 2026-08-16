@@ -1,19 +1,78 @@
 ---
 # Defaults for the `minio` role — Phase 8.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  YOU ALMOST CERTAINLY DO NOT NEED THIS.                                   │
+# │                                                                           │
+# │  The `django` role stores uploads on local disk and nginx serves them     │
+# │  from there. That works, it is fast, and it is already backed up by the   │
+# │  `backup` role.                                                           │
+# │                                                                           │
+# │  Object storage earns its place when submissions outgrow one disk, or     │
+# │  when more than one application host needs the same files. Three servers  │
+# │  and one web host is neither.                                             │
+# │                                                                           │
+# │  Implemented so that day is a config change, not a build. Off until then. │
+# └───────────────────────────────────────────────────────────────────────────┘
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
 minio_enabled: false
 
-minio_version: "latest"
-minio_data_dir: "/srv/minio"
+# ── Installation ────────────────────────────────────────────────────────────
+# MinIO has no APT repository. A pinned .deb with a checksum, which means
+# OWNING ITS UPDATES BY HAND — nothing will tell you when a security release
+# lands. That is a real argument for leaving this off.
+#
+# Check for releases: https://github.com/minio/minio/releases
+minio_version: "RELEASE.2024-10-13T13-34-11Z"
+minio_deb_url: "https://dl.min.io/server/minio/release/linux-amd64/archive/minio_20241013133411.0.0_amd64.deb"
+minio_deb_checksum: "sha256:0f1e5c50e2e5d3e0a6b3e0f1d2c4b5a6978899aabbccddeeff00112233445566"  # TODO: replace
+
+minio_client_url: "https://dl.min.io/client/mc/release/linux-amd64/mc"
+minio_service_name: minio
+minio_user: minio-user
+minio_group: minio-user
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+minio_data_dir: /srv/minio
+minio_config_dir: /etc/minio
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# Private address only. MinIO's console is a full administrative interface —
+# create buckets, browse objects, mint access keys. On a competition network
+# that is not something to bind to 0.0.0.0.
+minio_bind: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
 minio_api_port: 9000
 minio_console_port: 9001
-# list of dicts: name, policy, versioning
-minio_buckets: []
-minio_root_user: "jengasec"
-# add the key to vault.yml before enabling
-minio_root_password: "{{ vault_minio_root_password | default(omit) }}"
+
+# ── Credentials ─────────────────────────────────────────────────────────────
+# The root credentials. Every bucket and every object is reachable with them,
+# so they belong in the vault and nowhere else.
+minio_root_user: jengasec
+minio_root_password: "{{ vault_minio_root_password | default('') }}"
+
+# ── Buckets ─────────────────────────────────────────────────────────────────
+# Fields: name, policy (none | download | upload | public), versioning.
+#
+# 'none' means private — reachable only with credentials. Submissions must stay
+# private; 'public' on a submissions bucket would put every uploaded document
+# on the open internet with a guessable URL.
+minio_buckets:
+  - name: jengasec-submissions
+    policy: none
+    versioning: true          # a replaced submission does not destroy the first
+  - name: jengasec-backups
+    policy: none
+    versioning: false
+
+# ── TLS ─────────────────────────────────────────────────────────────────────
+# From the internal CA. Without it the root credentials cross the LAN in clear
+# on every request.
+minio_tls_enabled: true
+minio_tls_cert: "/etc/ssl/jengasec/{{ inventory_hostname }}.crt"
+minio_tls_key: "/etc/ssl/jengasec/private/{{ inventory_hostname }}.key"
+
+# ── Retention ───────────────────────────────────────────────────────────────
+# Expire noncurrent versions after this. Versioning without expiry means the
+# bucket grows forever, which on a spare box is how the disk fills.
+minio_lifecycle_enabled: true
+minio_noncurrent_version_expiry_days: 90

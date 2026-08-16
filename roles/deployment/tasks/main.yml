@@ -1,40 +1,249 @@
 ---
 # deployment — Phase 7
-# Application release, rollback, and service orchestration.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Pull the target revision and record it
-#   - Run migrations and collectstatic in the right order
-#   - Restart services in dependency order
-#   - Health check after release, and roll back if it fails
-#   - Keep the previous release available for instant rollback
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Ships a revision onto a running platform. Record what is live, deploy, verify,
+# roll back if the verification fails.
 
-- name: Refuse to run — the deployment role is not implemented yet
+# ── Record what is currently live ───────────────────────────────────────────
+# Before anything changes. Without this there is nothing to roll back TO, and
+# "what was running before?" during an incident becomes guesswork.
+
+- name: Ensure the deployment state directory exists
+  ansible.builtin.file:
+    path: "{{ deployment_state_dir }}"
+    state: directory
+    owner: "{{ deployment_user }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0750"
+  tags: [deployment, state]
+
+- name: Record the currently deployed revision
+  ansible.builtin.command:
+    cmd: git rev-parse HEAD
+    chdir: "{{ deployment_source_dir }}"
+  become: true
+  become_user: "{{ deployment_user }}"
+  register: deployment_previous
+  changed_when: false
+  failed_when: false
+  tags: [deployment, state]
+
+- name: Check for uncommitted changes
+  ansible.builtin.command:
+    cmd: git status --porcelain
+    chdir: "{{ deployment_source_dir }}"
+  become: true
+  become_user: "{{ deployment_user }}"
+  register: deployment_dirty
+  changed_when: false
+  failed_when: false
+  tags: [deployment, state]
+
+# Someone hot-fixed something on the server. Deploying over it destroys both the
+# fix and the evidence of what was wrong — and whoever did it is probably not in
+# the room.
+- name: Refuse to deploy over uncommitted changes
+  ansible.builtin.assert:
+    that:
+      - deployment_dirty.stdout | default('') | trim | length == 0
+    fail_msg: >-
+      {{ deployment_source_dir }} has uncommitted changes on
+      {{ inventory_hostname }}:
+      {{ deployment_dirty.stdout_lines | default([]) | join(', ') }}.
+      Someone changed something on the server. Deploying would destroy it and
+      the evidence of why. Investigate first, then either commit the change
+      upstream or set deployment_refuse_if_dirty: false to discard it
+      deliberately.
+    success_msg: "Working tree is clean"
+  when: deployment_refuse_if_dirty | bool
+  tags: [deployment, state]
+
+- name: Announce the deployment in the journal
+  ansible.builtin.command:
+    cmd: >-
+      systemd-cat -t jengasec-deploy -p notice
+      echo "deploy starting: {{ deployment_previous.stdout | default('unknown') | truncate(12, true, '') }}
+      -> {{ deployment_revision }} by {{ lookup('env', 'USER') | default('ansible') }}"
+  changed_when: false
+  failed_when: false
+  when: deployment_log_to_journal | bool
+  tags: [deployment, state]
+
+# ── Maintenance page ────────────────────────────────────────────────────────
+
+- name: Enable the maintenance page
+  ansible.builtin.template:
+    src: maintenance.html.j2
+    dest: "{{ deployment_maintenance_file }}"
+    owner: root
+    group: www-data
+    mode: "0644"
+  when: deployment_maintenance_page | bool
+  tags: [deployment, maintenance]
+
+# ── Deploy ──────────────────────────────────────────────────────────────────
+
+- name: Fetch the target revision
+  ansible.builtin.git:
+    repo: "{{ app_repo_url }}"
+    dest: "{{ deployment_source_dir }}"
+    version: "{{ deployment_revision }}"
+    force: "{{ not (deployment_refuse_if_dirty | bool) }}"
+  become: true
+  become_user: "{{ deployment_user }}"
+  register: deployment_checkout
+  tags: [deployment, code]
+
+- name: Install updated requirements
+  ansible.builtin.pip:
+    requirements: "{{ deployment_source_dir }}/requirements.txt"
+    virtualenv: "{{ deployment_venv_dir }}"
+    state: present
+  become: true
+  become_user: "{{ deployment_user }}"
+  when: deployment_install_requirements | bool
+  tags: [deployment, code]
+
+# Migrations run BEFORE the reload, deliberately.
+#
+# The old code must tolerate the new schema for the moment between them, which
+# is why additive migrations (add a column, add a table) are safe to deploy this
+# way and destructive ones (drop or rename a column) are not — those need two
+# releases. Worth knowing before writing the migration, not after.
+- name: Run migrations
+  ansible.builtin.command:
+    cmd: "{{ deployment_venv_dir }}/bin/python manage.py migrate --noinput"
+    chdir: "{{ deployment_source_dir }}"
+  become: true
+  become_user: "{{ deployment_user }}"
+  register: deployment_migrate
+  changed_when: "'No migrations to apply' not in (deployment_migrate.stdout | default(''))"
+  when: deployment_run_migrations | bool
+  tags: [deployment, migrate]
+
+- name: Collect static files
+  ansible.builtin.command:
+    cmd: "{{ deployment_venv_dir }}/bin/python manage.py collectstatic --noinput"
+    chdir: "{{ deployment_source_dir }}"
+  become: true
+  become_user: "{{ deployment_user }}"
+  register: deployment_collect
+  changed_when: "'0 static files copied' not in (deployment_collect.stdout | default(''))"
+  when: deployment_collectstatic | bool
+  tags: [deployment, static]
+
+# ── Reload ──────────────────────────────────────────────────────────────────
+
+# Reload, not restart. gunicorn re-execs its workers while holding the socket
+# open, so nothing in flight is dropped and no request is refused.
+- name: Reload the application
+  ansible.builtin.systemd:
+    name: "{{ gunicorn_service_name | default('gunicorn') }}"
+    state: reloaded
+  tags: [deployment, reload]
+
+- name: Disable the maintenance page
+  ansible.builtin.file:
+    path: "{{ deployment_maintenance_file }}"
+    state: absent
+  when: deployment_maintenance_page | bool
+  tags: [deployment, maintenance]
+
+# ── Verify ──────────────────────────────────────────────────────────────────
+
+# /healthz/ runs SELECT 1, so a 200 means the application started AND can reach
+# the database. Checking / would return 200 with PostgreSQL completely down.
+- name: Health check the new release
+  ansible.builtin.uri:
+    url: "{{ deployment_healthcheck_url }}"
+    validate_certs: "{{ deployment_healthcheck_validate_certs | bool }}"
+    timeout: "{{ deployment_healthcheck_timeout }}"
+    status_code: [200]
+  register: deployment_health
+  retries: "{{ deployment_healthcheck_retries }}"
+  delay: "{{ deployment_healthcheck_delay }}"
+  until: (deployment_health.status | default(0)) == 200
+  changed_when: false
+  failed_when: false
+  when: deployment_healthcheck_enabled | bool
+  tags: [deployment, verify]
+
+- name: Report a successful deployment
+  ansible.builtin.debug:
+    msg: >-
+      Deployed {{ deployment_checkout.after | default('?') | truncate(12, true, '') }}
+      to {{ inventory_hostname }}. Health check returned
+      {{ deployment_health.status | default('not checked') }}.
+      {{ 'Migrations applied.' if (deployment_migrate.changed | default(false)) else 'No migrations.' }}
+  when: (deployment_health.status | default(200)) == 200
+  tags: [deployment, verify]
+
+# ── Roll back ───────────────────────────────────────────────────────────────
+
+- name: Roll back the code
+  ansible.builtin.git:
+    repo: "{{ app_repo_url }}"
+    dest: "{{ deployment_source_dir }}"
+    version: "{{ deployment_previous.stdout | trim }}"
+    force: true
+  become: true
+  become_user: "{{ deployment_user }}"
+  when:
+    - deployment_healthcheck_enabled | bool
+    - deployment_rollback_on_failure | bool
+    - (deployment_health.status | default(0)) != 200
+    - deployment_previous.stdout | default('') | trim | length > 0
+  tags: [deployment, rollback]
+
+- name: Reload after rollback
+  ansible.builtin.systemd:
+    name: "{{ gunicorn_service_name | default('gunicorn') }}"
+    state: reloaded
+  when:
+    - deployment_healthcheck_enabled | bool
+    - deployment_rollback_on_failure | bool
+    - (deployment_health.status | default(0)) != 200
+  tags: [deployment, rollback]
+
+# The migration warning is the important part. Rolling code back past a
+# migration that already ran usually breaks worse than the problem being fixed,
+# and this role cannot undo it.
+- name: Fail with the rollback outcome
   ansible.builtin.fail:
     msg: >-
-      The 'deployment' role is a Phase 7 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/deployment/README.md.
-  when: not deployment_enabled | bool
-  tags:
-    - deployment
-    - stub
+      DEPLOYMENT FAILED on {{ inventory_hostname }}. Health check at
+      {{ deployment_healthcheck_url }} returned
+      {{ deployment_health.status | default('no response') }}.
+      {{ 'Code was rolled back to '
+         ~ (deployment_previous.stdout | default('') | truncate(12, true, ''))
+         ~ ' and gunicorn reloaded.'
+         if deployment_rollback_on_failure else 'No rollback was attempted.' }}
+      {{ 'WARNING: migrations were applied and have NOT been reverted — this
+          role cannot undo them. The rolled-back code is now running against a
+          newer schema. Check whether the migration was additive before
+          assuming the site works.'
+         if (deployment_migrate.changed | default(false)) else '' }}
+      Investigate: journalctl -u gunicorn -n 50
+  when:
+    - deployment_healthcheck_enabled | bool
+    - (deployment_health.status | default(0)) != 200
+  tags: [deployment, verify]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install deployment
-#   ansible.builtin.apt:
-#     name: "{{ deployment_packages }}"
-#     state: present
-#   when: deployment_enabled | bool
-#   notify: Restart deployment
+# ── Record the release ──────────────────────────────────────────────────────
+
+# Appended after a successful deployment. During an incident, "what changed and
+# when" is the first question, and this file answers it without needing git.
+- name: Append to the release log
+  ansible.builtin.lineinfile:
+    path: "{{ deployment_state_dir }}/releases.log"
+    line: >-
+      {{ ansible_date_time.iso8601 }}
+      {{ deployment_checkout.after | default('?') }}
+      {{ deployment_revision }}
+      {{ 'migrations' if (deployment_migrate.changed | default(false)) else 'no-migrations' }}
+    create: true
+    owner: "{{ deployment_user }}"
+    group: "{{ app_group | default('jengasec') }}"
+    mode: "0640"
+  when: (deployment_health.status | default(200)) == 200
+  tags: [deployment, state]

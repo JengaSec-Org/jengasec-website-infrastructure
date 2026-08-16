@@ -1,0 +1,53 @@
+---
+# server2 — lab VM. Database + DNS — PostgreSQL, Redis, Bind9
+#
+# 1.5 GB RAM, 2 vCPU, VirtualBox.
+
+inventory_hostname_short: server2
+common_hostname: "server2.{{ jengasec_domain }}"
+host_role_description: "Database + DNS — PostgreSQL, Redis, Bind9"
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# Adapter 2, the host-only NIC. VirtualBox + Debian 12 normally names it
+# enp0s8 — CONFIRM IT, do not assume:
+#     ip -brief link show
+#
+# enp0s3 is Adapter 1 (NAT) and is left alone: it holds the default route and
+# is how apt reaches the internet.
+networking_interface: enp0s8
+networking_address: 192.168.56.12
+networking_netmask: 255.255.255.0
+
+# EMPTY ON PURPOSE. The default route belongs to the NAT adapter. Putting a
+# gateway here too would give the host two default routes, and apt would stop
+# working after the next reboot with nothing in the logs to explain it.
+networking_gateway: ""
+
+networking_dns_servers:
+  - 192.168.56.12          # Bind9 on server2
+  - 1.1.1.1                # fallback, reached via NAT
+networking_dns_search: "{{ jengasec_domain }}"
+
+# OFF by default. The host-only interface is brought up once by hand during
+# setup — see docs/lab-setup.md. Flip this to true only after taking a
+# snapshot: it is the role most able to cut the VM off, and the lab is the
+# right place to watch that happen.
+networking_configure: false
+
+# With no gateway the post-change ping would skip silently. Point it at another
+# VM so the interface is still proven.
+networking_verify_target: "192.168.56.11"
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+os_swap_enabled: true
+os_swap_size_mb: 1536
+
+# More swap than the others: PostgreSQL and Bind9 together on 1.5 GB is the
+# tightest box in the lab. It should not swap in normal use — vm.swappiness is
+# 1 — but the headroom stops the OOM killer choosing PostgreSQL.
+
+# ── Certificates ────────────────────────────────────────────────────────────
+certificates_common_name: "server2.{{ jengasec_domain }}"
+certificates_subject_alt_names:
+  - "DNS:server2.{{ jengasec_domain }}"
+  - "IP:192.168.56.12"

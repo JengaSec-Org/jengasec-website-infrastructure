@@ -1,40 +1,266 @@
 ---
 # cloudflare — Phase 9
-# Public access via Cloudflare DNS, Tunnel, and WAF.
 #
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - cloudflared Tunnel, so no inbound port needs opening
-#   - DNS record management through the API
-#   - Firewall and rate-limiting rules
-#   - Origin certificates
-#   - Decide Tunnel vs public DNS according to campus network policy
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
+# Cloudflare Tunnel, so the platform is reachable off campus without opening a
+# single inbound port. Read the banner in defaults/main.yml first.
 
-- name: Refuse to run — the cloudflare role is not implemented yet
-  ansible.builtin.fail:
+- name: Report that Cloudflare is disabled
+  ansible.builtin.debug:
     msg: >-
-      The 'cloudflare' role is a Phase 9 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/cloudflare/README.md.
-  when: not cloudflare_enabled | bool
-  tags:
-    - cloudflare
-    - stub
+      cloudflare_enabled is false, so no tunnel is configured on
+      {{ inventory_hostname }}. The platform is reachable only from the
+      competition LAN. See docs/runbook.md for the Cloudflare prerequisites —
+      an account, a zone, a tunnel and its token — which have to exist before
+      this role can do anything.
+  when: not (cloudflare_enabled | bool)
+  tags: [cloudflare, always]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install cloudflare
-#   ansible.builtin.apt:
-#     name: "{{ cloudflare_packages }}"
-#     state: present
-#   when: cloudflare_enabled | bool
-#   notify: Restart cloudflare
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Refuse an unsupported mode
+  ansible.builtin.assert:
+    that:
+      - cloudflare_mode == 'tunnel'
+    fail_msg: >-
+      cloudflare_mode is '{{ cloudflare_mode }}'. Only 'tunnel' is implemented.
+      'dns' would proxy to a public origin address, which needs inbound 443 open
+      to the internet and puts the origin back on the map — the opposite of what
+      this repository is set up for.
+    success_msg: "Tunnel mode"
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, always]
+
+# .local is reserved for mDNS. Cloudflare will not serve it, and the failure at
+# the far end is opaque — better to catch it here.
+- name: Refuse a non-public domain
+  ansible.builtin.assert:
+    that:
+      - not (cloudflare_public_domain is search('\.local$'))
+      - cloudflare_public_domain | length > 0
+    fail_msg: >-
+      cloudflare_public_domain is '{{ cloudflare_public_domain }}'. Cloudflare
+      cannot serve a .local name — it is reserved for mDNS and is not a real
+      zone. Set jengasec_public_domain in group_vars/all/main.yml to a domain
+      you have added to your Cloudflare account.
+    success_msg: "Public domain {{ cloudflare_public_domain }}"
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, always]
+
+- name: Refuse to run without a tunnel token
+  ansible.builtin.assert:
+    that:
+      - cloudflare_tunnel_token | length > 20
+    fail_msg: >-
+      vault_cloudflare_tunnel_token is not set. Create the tunnel first —
+      Cloudflare dashboard, Zero Trust > Networks > Tunnels > Create — then copy
+      the token into your vault. Ansible cannot create the tunnel; it can only
+      connect one that exists. See docs/runbook.md.
+    success_msg: "Tunnel token present"
+  when: cloudflare_enabled | bool
+  no_log: true
+  tags: [cloudflare, always]
+
+# nginx must be serving before cloudflared has anything to forward to, and the
+# origin certificate must exist or the TLS verification below fails.
+- name: Check the origin certificate exists
+  ansible.builtin.stat:
+    path: "{{ cloudflare_origin_ca_pool }}"
+  register: cloudflare_ca
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, always]
+
+- name: Refuse to verify the origin without the CA
+  ansible.builtin.assert:
+    that:
+      - cloudflare_ca.stat.exists
+    fail_msg: >-
+      {{ cloudflare_origin_ca_pool }} does not exist, so cloudflared cannot
+      verify the origin certificate. Run the `certificates` role first, or set
+      cloudflare_origin_no_tls_verify: true to accept an unverified loopback hop
+      — which is nearly harmless here and still the wrong habit.
+    success_msg: "Internal CA available for origin verification"
+  when:
+    - cloudflare_enabled | bool
+    - not (cloudflare_origin_no_tls_verify | bool)
+  tags: [cloudflare, always]
+
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Ensure the keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, packages]
+
+# Scoped with signed-by= below, so this key can sign Cloudflare's repository and
+# nothing else — unlike apt-key, where a key can sign any repository at all.
+- name: Fetch the Cloudflare signing key
+  ansible.builtin.get_url:
+    url: "{{ cloudflare_apt_key_url }}"
+    dest: "{{ cloudflare_apt_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, packages]
+
+- name: Add the Cloudflare repository
+  ansible.builtin.apt_repository:
+    repo: "{{ cloudflare_apt_repo }}"
+    filename: cloudflared
+    state: present
+    update_cache: true
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, packages]
+
+- name: Install cloudflared
+  ansible.builtin.apt:
+    name: "{{ cloudflare_package }}"
+    state: present
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, packages]
+
+# ── Configuration ───────────────────────────────────────────────────────────
+
+- name: Create the cloudflared config directory
+  ansible.builtin.file:
+    path: "{{ cloudflare_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, config]
+
+# 0600. The token authenticates this host as the tunnel — anyone who reads it
+# can serve traffic for your public hostname.
+- name: Write the tunnel token
+  ansible.builtin.copy:
+    content: "{{ cloudflare_tunnel_token }}\n"
+    dest: "{{ cloudflare_config_dir }}/token"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: cloudflare_enabled | bool
+  notify: Restart cloudflared
+  tags: [cloudflare, config]
+
+- name: Write the cloudflared configuration
+  ansible.builtin.template:
+    src: config.yml.j2
+    dest: "{{ cloudflare_config_dir }}/config.yml"
+    owner: root
+    group: root
+    mode: "0640"
+    backup: true
+  when: cloudflare_enabled | bool
+  notify: Restart cloudflared
+  tags: [cloudflare, config]
+
+# `cloudflared tunnel ingress validate` parses the ingress rules and checks the
+# catch-all is present and last. Without a catch-all cloudflared refuses to
+# start, and the error does not mention it.
+- name: Validate the ingress rules
+  ansible.builtin.command:
+    cmd: "cloudflared tunnel --config {{ cloudflare_config_dir }}/config.yml ingress validate"
+  register: cloudflare_ingress_check
+  changed_when: false
+  failed_when: cloudflare_ingress_check.rc != 0
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, config, verify]
+
+# A templated unit rather than `cloudflared service install`, so it matches the
+# rest of the repository and points at our config path.
+- name: Install the cloudflared service unit
+  ansible.builtin.template:
+    src: cloudflared.service.j2
+    dest: "/etc/systemd/system/{{ cloudflare_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloudflare_enabled | bool
+  notify:
+    - Reload systemd for cloudflared
+    - Restart cloudflared
+  tags: [cloudflare, config]
+
+- name: Apply pending cloudflared changes
+  ansible.builtin.meta: flush_handlers
+  tags: [cloudflare]
+
+- name: Enable and start cloudflared
+  ansible.builtin.systemd:
+    name: "{{ cloudflare_service_name }}"
+    enabled: true
+    state: started
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, service]
+
+# ── Access ──────────────────────────────────────────────────────────────────
+
+- name: Configure Cloudflare Access
+  ansible.builtin.include_tasks: access.yml
+  when:
+    - cloudflare_enabled | bool
+    - cloudflare_access_enabled | bool
+  tags: [cloudflare, access]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Wait for the tunnel to register
+  ansible.builtin.uri:
+    url: "http://{{ cloudflare_metrics_bind }}/ready"
+    timeout: 10
+  register: cloudflare_ready
+  retries: 12
+  delay: 5
+  until: (cloudflare_ready.status | default(0)) == 200
+  changed_when: false
+  failed_when: false
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, verify]
+
+- name: Report the tunnel state
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Tunnel is up — ' ~ cloudflare_public_hostname ~ ' should now resolve
+          publicly and reach nginx over the loopback.'
+         if (cloudflare_ready.status | default(0)) == 200
+         else 'Tunnel did NOT come up. Check: journalctl -u ' ~ cloudflare_service_name ~
+              ' -n 50. The usual causes are a token for a deleted tunnel, no
+              outbound 7844/udp, or an origin nginx is not serving yet.' }}
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, verify]
+
+# A tunnel whose origin is unreachable registers happily with Cloudflare and
+# then returns 502 to every visitor. Checking the origin from here separates
+# "the tunnel is broken" from "the site is broken".
+- name: Verify the origin answers
+  ansible.builtin.uri:
+    url: "{{ cloudflare_origin_url }}/healthz/"
+    headers:
+      Host: "{{ cloudflare_origin_server_name }}"
+    validate_certs: false
+    timeout: 15
+    status_code: [200, 503]
+  register: cloudflare_origin_check
+  changed_when: false
+  failed_when: false
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, verify]
+
+- name: Report the origin state
+  ansible.builtin.debug:
+    msg: >-
+      Origin {{ cloudflare_origin_url }} returned
+      {{ cloudflare_origin_check.status | default('no response') }}.
+      {{ 'A registered tunnel with a dead origin returns 502 to every visitor —
+          fix nginx before announcing the public hostname.'
+         if (cloudflare_origin_check.status | default(0)) not in [200, 503] else '' }}
+  when: cloudflare_enabled | bool
+  tags: [cloudflare, verify]

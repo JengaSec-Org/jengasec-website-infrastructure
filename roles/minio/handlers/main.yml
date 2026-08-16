@@ -1,13 +1,14 @@
 ---
 # Handlers for the `minio` role.
-#
-# Handlers run once, at the end of the play, no matter how many tasks notified
-# them. Restarting a service is a handler, never a task.
 
+# Restart, not reload — MinIO reads its environment only at startup.
+#
+# In-flight uploads fail. On a single-node deployment there is no way around
+# that, which is one more reason to make configuration changes deliberately
+# rather than as part of a routine run.
 - name: Restart minio
   ansible.builtin.systemd:
-    name: "{{ minio_service_name | default('minio') }}"
+    name: "{{ minio_service_name }}"
     state: restarted
     daemon_reload: true
   listen: "restart minio"
-  when: minio_enabled | bool

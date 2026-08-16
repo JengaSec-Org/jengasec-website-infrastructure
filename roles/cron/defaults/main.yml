@@ -1,15 +1,73 @@
 ---
 # Defaults for the `cron` role — Phase 7.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# Scheduled maintenance.
+#
+# Prefer a systemd timer over cron for anything systemd already supervises: you
+# get journal logging, dependency ordering, Persistent=true to catch up after
+# downtime, and RandomizedDelaySec so three servers do not all fire at the same
+# instant. The `systemd` role takes timers via systemd_timers.
+#
+# cron is still the right tool for a short, self-contained script on a simple
+# schedule — which is what everything below is.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
-cron_enabled: false
-
-# list of dicts: name, minute, hour, user, job
-cron_jobs: []
-# failures must reach a human
+# ── Environment ─────────────────────────────────────────────────────────────
+# Where failure output goes. cron mails stdout and stderr of any job that
+# produces output; with no MAILTO that mail goes nowhere and a job can fail
+# silently for weeks.
+#
+# This is the single most important line in the file.
 cron_mailto: "sucybersec@strathmore.edu"
+
+# cron runs with a minimal PATH — /usr/bin:/bin only. A script calling
+# `systemctl` or `psql` without a full path works when tested by hand and fails
+# under cron, which is a classic afternoon lost.
 cron_path: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+cron_shell: /bin/bash
+
+# ── Script location ─────────────────────────────────────────────────────────
+cron_script_dir: /usr/local/sbin
+cron_log_dir: /var/log/jengasec
+
+# ── Certificate expiry check ────────────────────────────────────────────────
+# The internal CA issues one-year certificates and nothing renews them
+# automatically. Without this, the first sign of expiry is the site failing.
+#
+# Prometheus has a matching alert, but it needs the blackbox exporter which is
+# not deployed — so today this check is the only thing watching.
+cron_cert_check_enabled: true
+cron_cert_check_schedule: { minute: "0", hour: "7", day: "*", month: "*", weekday: "*" }
+cron_cert_check_warn_days: 21
+cron_cert_check_paths:
+  - "/etc/ssl/jengasec/{{ inventory_hostname }}.crt"
+  - "/etc/ssl/jengasec/ca/jengasec-ca.crt"
+
+# ── Disk usage check ────────────────────────────────────────────────────────
+# A second pair of eyes on the thing most likely to take a small server down.
+# Prometheus covers this too, but this one mails a human and needs no exporter.
+cron_disk_check_enabled: true
+cron_disk_check_schedule: { minute: "0", hour: "*/6", day: "*", month: "*", weekday: "*" }
+cron_disk_check_threshold: "{{ os_disk_usage_warn_percent | default(85) }}"
+
+# ── Temporary file cleanup ──────────────────────────────────────────────────
+# Document parsing writes temporary files. A crashed parse leaves them behind,
+# and on the web host they accumulate in the same filesystem as the uploads.
+cron_tmp_cleanup_enabled: true
+cron_tmp_cleanup_schedule: { minute: "30", hour: "3", day: "*", month: "*", weekday: "*" }
+cron_tmp_cleanup_age_days: 7
+cron_tmp_cleanup_paths:
+  - /tmp
+  - /var/tmp
+
+# ── Extra jobs ──────────────────────────────────────────────────────────────
+# Fields: name, minute, hour, day, month, weekday, user, job.
+#
+# Add a job here rather than editing a crontab by hand — a hand-edited crontab
+# is invisible to this repository and disappears when the host is rebuilt.
+cron_jobs: []
+
+# ── Hygiene ─────────────────────────────────────────────────────────────────
+# Report crontab entries this repository did not create. Not removed — someone
+# may have added one deliberately — but surfaced, because an unexplained
+# scheduled job is also what persistence looks like.
+cron_report_unmanaged: true

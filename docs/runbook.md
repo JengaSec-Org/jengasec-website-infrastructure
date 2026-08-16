@@ -5,6 +5,12 @@ breaks.
 
 ---
 
+> **Try it on VMs first.** [lab-setup.md](lab-setup.md) builds this on four
+> VirtualBox VMs, where being locked out costs a snapshot rollback instead of a
+> trip to the server room. Every role here has been structurally verified but
+> not run against live hardware — the lab is where you find out which ones are
+> wrong.
+
 ## 0. Check the repository before you move it
 
 Do this on whichever machine you author on — it needs no Ansible, only
@@ -215,7 +221,135 @@ dig @10.0.0.12 jengasec.local AXFR       # MUST be refused
 
 ---
 
-## 9. Before the competition
+## 9. Phase 9 — reachable off campus
+
+Four things must exist **in Cloudflare** first. Ansible cannot create them.
+
+### a. A zone
+
+Add a **real domain** to your Cloudflare account and follow the nameserver
+change it asks for. `jengasec.local` cannot be used — `.local` is reserved for
+mDNS and Cloudflare will not serve it.
+
+Set it in `group_vars/all/main.yml`:
+
+```yaml
+jengasec_public_domain: jengasec.co.ke
+```
+
+### b. A tunnel
+
+Zero Trust → Networks → Tunnels → **Create a tunnel** → Cloudflared.
+
+Name it `jengasec`. Cloudflare shows an install command containing a long
+token — you only need the token.
+
+### c. The token, into the vault
+
+```bash
+make vault-edit
+```
+
+```yaml
+vault_cloudflare_tunnel_token: "eyJhIjoiN..."
+```
+
+### d. A public hostname
+
+On the tunnel's **Public Hostname** tab:
+
+| Field | Value |
+|---|---|
+| Subdomain | `platform` |
+| Domain | your domain |
+| Service | `HTTPS` → `127.0.0.1:443` |
+
+Cloudflare creates the DNS record. The role writes the matching ingress rule
+locally, so this only has to agree — it does not have to be exact.
+
+### e. For Access on `/admin/`
+
+A **second** token: My Profile → API Tokens → Create → *Access: Apps and
+Policies — Edit*. The tunnel token has no Access rights.
+
+```yaml
+vault_cloudflare_api_token: "..."
+vault_cloudflare_account_id: "..."     # dashboard, right-hand sidebar
+```
+
+### Then run it
+
+```yaml
+# group_vars/web/main.yml
+cloudflare_enabled: true
+```
+
+```bash
+make cloudflare LIMIT=server1
+```
+
+Test **from off campus** — a phone on mobile data is the honest check:
+
+```bash
+curl -I https://platform.jengasec.co.ke/healthz/
+```
+
+And confirm the origin is not directly reachable, which is the whole point:
+
+```bash
+curl --connect-timeout 5 https://<server1-public-address>/     # must time out
+```
+
+> **Test `/admin/` from a logged-out browser before the competition.** An Access
+> policy that excludes the organisers locks them out of scoring, and the fix is
+> in Cloudflare's dashboard — not somewhere Ansible can reach while everyone is
+> waiting.
+
+---
+
+## 10. Phase 10 — backups
+
+The backup host **pulls**, so it needs a key the source hosts accept. That takes
+two passes.
+
+```bash
+make backup LIMIT=server3
+```
+
+The first run generates the key on server3 and **prints the line to install**.
+Copy it into `group_vars/all/main.yml`:
+
+```yaml
+users_backup_pull_enabled: true
+users_backup_pull_key: "ssh-ed25519 AAAA..."
+users_backup_pull_from: "10.0.0.13"
+```
+
+Install it on the source hosts, then run the backup again:
+
+```bash
+ansible-playbook -i inventories/production playbooks/bootstrap.yml --tags backup-key
+make backup LIMIT=server3
+```
+
+### Then prove it works — once, by hand
+
+```bash
+sudo -u backup /usr/local/sbin/jengasec-backup
+sudo -u backup /usr/local/sbin/jengasec-backup-verify
+jengasec-restore --list
+```
+
+**A backup that has never been restored is a hope, not a backup.** Everything
+else in that role is machinery around this one check.
+
+Note the verification needs the GPG **private** key, which deliberately is not
+on server3. Run it from the machine that holds the key, or import it
+temporarily and remove it afterwards.
+
+---
+
+## 11. Before the competition
 
 ```yaml
 # group_vars/all/main.yml

@@ -1,40 +1,173 @@
 ---
 # cron — Phase 7
-# Scheduled maintenance jobs.
-#
-# STATUS: NOT YET IMPLEMENTED.
-#
-# This role fails loudly rather than reporting success while doing nothing.
-# A green Ansible run that changed nothing is the most expensive kind of bug in
-# infrastructure code: you believe a machine is configured when it is not.
-#
-# Planned responsibilities:
-#   - Backup schedules
-#   - Certificate renewal checks
-#   - Log and temp-file cleanup
-#   - Report generation
-#   - Every job logs, and a silent failure must be impossible
-#
-# To implement: fill defaults/main.yml first, then templates/, then these tasks,
-# then delete the fail below and update the status table in docs/roles.md.
 
-- name: Refuse to run — the cron role is not implemented yet
-  ansible.builtin.fail:
+- name: Ensure the script and log directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ cron_script_dir }}"
+  tags: [cron, directories]
+
+- name: Ensure the log directory exists
+  ansible.builtin.file:
+    path: "{{ cron_log_dir }}"
+    state: directory
+    owner: root
+    group: adm
+    mode: "0750"
+  tags: [cron, directories]
+
+# ── Environment ─────────────────────────────────────────────────────────────
+
+# MAILTO and PATH are set once, at the top of root's crontab, rather than
+# repeated on every job. Ansible's cron module manages these as named
+# environment variables.
+- name: Set the crontab environment
+  ansible.builtin.cron:
+    name: "{{ item.name }}"
+    env: true
+    job: "{{ item.value }}"
+    user: root
+  loop:
+    - { name: MAILTO, value: "{{ cron_mailto }}" }
+    - { name: PATH, value: "{{ cron_path }}" }
+    - { name: SHELL, value: "{{ cron_shell }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [cron, environment]
+
+# ── Scripts ─────────────────────────────────────────────────────────────────
+# Real scripts, not one-liners in the crontab. A crontab one-liner cannot be
+# tested by hand, cannot be commented, and quoting inside it is its own hazard.
+
+- name: Install the maintenance scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ cron_script_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - { src: check-certificates.sh.j2, dest: jengasec-check-certificates, when: "{{ cron_cert_check_enabled }}" }
+    - { src: check-disk.sh.j2, dest: jengasec-check-disk, when: "{{ cron_disk_check_enabled }}" }
+    - { src: cleanup-tmp.sh.j2, dest: jengasec-cleanup-tmp, when: "{{ cron_tmp_cleanup_enabled }}" }
+  loop_control:
+    label: "{{ item.dest }}"
+  when: item.when | bool
+  tags: [cron, scripts]
+
+# ── Jobs ────────────────────────────────────────────────────────────────────
+
+- name: Schedule the certificate expiry check
+  ansible.builtin.cron:
+    name: "jengasec certificate expiry check"
+    minute: "{{ cron_cert_check_schedule.minute }}"
+    hour: "{{ cron_cert_check_schedule.hour }}"
+    day: "{{ cron_cert_check_schedule.day }}"
+    month: "{{ cron_cert_check_schedule.month }}"
+    weekday: "{{ cron_cert_check_schedule.weekday }}"
+    user: root
+    job: "{{ cron_script_dir }}/jengasec-check-certificates"
+    state: "{{ 'present' if cron_cert_check_enabled else 'absent' }}"
+  tags: [cron, jobs]
+
+- name: Schedule the disk usage check
+  ansible.builtin.cron:
+    name: "jengasec disk usage check"
+    minute: "{{ cron_disk_check_schedule.minute }}"
+    hour: "{{ cron_disk_check_schedule.hour }}"
+    day: "{{ cron_disk_check_schedule.day }}"
+    month: "{{ cron_disk_check_schedule.month }}"
+    weekday: "{{ cron_disk_check_schedule.weekday }}"
+    user: root
+    job: "{{ cron_script_dir }}/jengasec-check-disk"
+    state: "{{ 'present' if cron_disk_check_enabled else 'absent' }}"
+  tags: [cron, jobs]
+
+- name: Schedule the temporary file cleanup
+  ansible.builtin.cron:
+    name: "jengasec temporary file cleanup"
+    minute: "{{ cron_tmp_cleanup_schedule.minute }}"
+    hour: "{{ cron_tmp_cleanup_schedule.hour }}"
+    day: "{{ cron_tmp_cleanup_schedule.day }}"
+    month: "{{ cron_tmp_cleanup_schedule.month }}"
+    weekday: "{{ cron_tmp_cleanup_schedule.weekday }}"
+    user: root
+    job: "{{ cron_script_dir }}/jengasec-cleanup-tmp"
+    state: "{{ 'present' if cron_tmp_cleanup_enabled else 'absent' }}"
+  tags: [cron, jobs]
+
+- name: Schedule additional jobs
+  ansible.builtin.cron:
+    name: "{{ item.name }}"
+    minute: "{{ item.minute | default('*') }}"
+    hour: "{{ item.hour | default('*') }}"
+    day: "{{ item.day | default('*') }}"
+    month: "{{ item.month | default('*') }}"
+    weekday: "{{ item.weekday | default('*') }}"
+    user: "{{ item.user | default('root') }}"
+    job: "{{ item.job }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ cron_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: cron_jobs | length > 0
+  tags: [cron, jobs]
+
+# ── Hygiene ─────────────────────────────────────────────────────────────────
+
+# Ansible writes each managed job under an "#Ansible: <name>" marker. Anything
+# in root's crontab without one was added by hand.
+#
+# Not removed — someone may have added it deliberately — but reported, because
+# an unexplained scheduled job is also what persistence looks like.
+# The awk pass: an "#Ansible:" marker makes the next job line managed, so it is
+# skipped. Comments, blanks and the environment lines are skipped too. Whatever
+# prints was added by hand.
+- name: Look for unmanaged crontab entries
+  ansible.builtin.shell:
+    cmd: |
+      crontab -l -u root 2>/dev/null | awk '
+        /^#Ansible:/            { managed = 1; next }
+        /^#/                    { next }
+        /^[[:space:]]*$/        { next }
+        /^(MAILTO|PATH|SHELL)=/ { next }
+                                { if (managed) { managed = 0; next } print }
+      ' || true
+  args:
+    executable: /bin/bash
+  register: cron_unmanaged
+  changed_when: false
+  failed_when: false
+  when: cron_report_unmanaged | bool
+  tags: [cron, verify]
+
+- name: Report unmanaged crontab entries
+  ansible.builtin.debug:
     msg: >-
-      The 'cron' role is a Phase 7 stub and has no tasks yet.
-      Nothing was configured on {{ inventory_hostname }}.
-      Implement it, or remove it from the playbook you are running.
-      See docs/roles.md and roles/cron/README.md.
-  when: not cron_enabled | bool
-  tags:
-    - cron
-    - stub
+      Crontab entries not managed by this repository on {{ inventory_hostname }}:
+      {{ cron_unmanaged.stdout_lines | default([]) | join(' | ') }}.
+      Review them — a scheduled job nobody can account for is also what
+      persistence looks like. Add legitimate ones to cron_jobs so they survive a
+      rebuild.
+  when:
+    - cron_report_unmanaged | bool
+    - cron_unmanaged.stdout | default('') | trim | length > 0
+  tags: [cron, verify]
 
-# Implemented tasks go here, guarded by the same flag while you develop:
-#
-# - name: Install cron
-#   ansible.builtin.apt:
-#     name: "{{ cron_packages }}"
-#     state: present
-#   when: cron_enabled | bool
-#   notify: Restart cron
+- name: Report the scheduled jobs
+  ansible.builtin.command:
+    cmd: crontab -l -u root
+  register: cron_listing
+  changed_when: false
+  failed_when: false
+  tags: [cron, verify]
+
+- name: Show the crontab
+  ansible.builtin.debug:
+    msg: "{{ cron_listing.stdout_lines | default(['no crontab']) | reject('match', '^#') | list }}"
+  tags: [cron, verify]

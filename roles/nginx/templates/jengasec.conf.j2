@@ -59,7 +59,7 @@ upstream {{ nginx_upstream_name }} {
 server {
     listen 80;
     listen [::]:80;
-    server_name {{ nginx_server_name }}{% for host in django_allowed_hosts | default([]) %}{% if host != nginx_server_name and host != '*' %} {{ host }}{% endif %}{% endfor %};
+    server_name {{ nginx_server_name }}{% for alias in nginx_server_aliases %} {{ alias }}{% endfor %};
 
     # Let certbot answer the ACME challenge over plain HTTP without being
     # redirected. Harmless with the internal CA, and required the moment you
@@ -87,7 +87,12 @@ server {
     listen 80;
     listen [::]:80;
 {% endif %}
-    server_name {{ nginx_server_name }};
+
+    # The internal name first — the certificate is issued for it, and
+    # cloudflared presents it as SNI. Aliases are the public Cloudflare
+    # hostname, so requests arriving through the tunnel match this vhost rather
+    # than falling through to the default one.
+    server_name {{ nginx_server_name }}{% for alias in nginx_server_aliases %} {{ alias }}{% endfor %};
 {% if nginx_ssl_enabled %}
 
     # ── TLS ─────────────────────────────────────────────────────────────────

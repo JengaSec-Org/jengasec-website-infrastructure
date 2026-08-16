@@ -182,7 +182,20 @@ nginx_gzip_types:
   - image/svg+xml
 
 # ── Site ────────────────────────────────────────────────────────────────────
+# The primary name. The TLS certificate is issued for it, and cloudflared
+# presents it as SNI when connecting to the origin — so this stays internal even
+# once the platform is public.
 nginx_server_name: "platform.{{ jengasec_domain | default('jengasec.local') }}"
+
+# Additional names the same vhost answers. The public Cloudflare hostname goes
+# here, set in group_vars/web.
+#
+# Without it, a request arriving through the tunnel carries a Host header this
+# server block does not match, nginx serves the default vhost instead, and the
+# symptom is a certificate warning or a blank page rather than anything naming
+# server_name.
+nginx_server_aliases: []
+
 nginx_redirect_http: true
 nginx_static_dir: "{{ app_static_dir | default('/opt/jengasec/app/staticfiles') }}"
 nginx_media_dir: "{{ app_media_dir | default('/opt/jengasec/app/media') }}"

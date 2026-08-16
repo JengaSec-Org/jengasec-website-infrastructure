@@ -3,7 +3,7 @@ galaxy_info:
   role_name: backup
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: Backups of the database, media, and configuration, with verified restores.
+  description: Pull-based encrypted backups with retention and verified restores.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,6 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - backup
 
 dependencies: []

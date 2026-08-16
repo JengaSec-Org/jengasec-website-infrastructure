@@ -1,0 +1,59 @@
+---
+# Lab backup target — server3.
+#
+# Worth exercising properly. The backup role has the most moving parts of
+# anything here — a pull key, GPG, retention, a restore — and the lab is the
+# only place you get to be wrong about them for free.
+
+firewall_rules_group:
+  - port: 873
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "rsync backup ingest"
+
+backup_enabled: true
+backup_root: /srv/backup
+
+# Short tiers so rotation is observable. Run the backup by hand nine times and
+# watch the oldest daily disappear — with production's 7/4/6 you would be
+# waiting six months to see a monthly expire.
+backup_retention_daily: 3
+backup_retention_weekly: 2
+backup_retention_monthly: 2
+
+# ON, even in the lab. Turning it off would mean the first time you exercise
+# GPG is the day it matters — and the awkward part is not the encryption, it is
+# key handling, which you want to have practised.
+backup_encrypt: true
+backup_gpg_recipient: "backups@jengasec.lab"
+
+backup_sources:
+  - name: postgresql
+    host: server2
+    type: pg_dump
+    database: jengasec
+  - name: media
+    host: server1
+    type: rsync
+    path: "{{ app_media_dir }}"
+  - name: config
+    host: server1
+    type: rsync
+    path: /etc
+
+# Verification points at the lab database host.
+backup_verify_enabled: true
+backup_verify_host: server2
+
+# A fresh Django install has around 20 tables. 5 is low enough not to trip on
+# a partly migrated lab, high enough to catch an empty dump.
+backup_verify_min_tables: 5
+
+# Small VM disk, and Prometheus shares it.
+backup_min_free_percent: 20
+
+# Every 15 minutes rather than nightly, so you can watch the timer fire instead
+# of coming back tomorrow. Revert this before copying anything to production.
+backup_schedule: "*:0/15"
+backup_schedule_randomized_delay: "1m"
+backup_verify_schedule: "hourly"

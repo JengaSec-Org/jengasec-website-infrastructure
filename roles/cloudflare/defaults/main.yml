@@ -1,18 +1,138 @@
 ---
 # Defaults for the `cloudflare` role — Phase 9.
 #
-# STATUS: NOT YET IMPLEMENTED. The variables below are the role's intended
-# contract, chosen now so that group_vars written today keep working when the
-# tasks are filled in. Override them in group_vars, not here.
+# Makes the platform reachable off campus through a Cloudflare Tunnel.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  A TUNNEL NEEDS NO INBOUND PORT.                                          │
+# │                                                                           │
+# │  cloudflared dials OUT to Cloudflare and holds the connection open.       │
+# │  Requests arrive down that existing connection.                           │
+# │                                                                           │
+# │  Three consequences, and all three are the reason to do it this way:      │
+# │    - the origin's address never appears in public DNS                     │
+# │    - a campus firewall blocking inbound traffic stops being an obstacle   │
+# │    - the origin is invisible to internet-wide scanning                    │
+# │                                                                           │
+# │  group_vars/web therefore closes 80 and restricts 443 to the LAN.         │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# PREREQUISITES THAT EXIST OUTSIDE THIS REPOSITORY. Ansible cannot create them:
+#   1. a Cloudflare account, and a real domain added to it as a zone
+#   2. a tunnel  (Zero Trust > Networks > Tunnels > Create)
+#   3. the tunnel token, into the vault as vault_cloudflare_tunnel_token
+#   4. a DNS record for the public hostname, pointing at the tunnel
+# See docs/runbook.md.
 
-# Guard. Stays false until the role is written; see tasks/main.yml.
+# Off by default. Enabling it changes how the platform is reachable, which is
+# not something that should happen as a side effect of a routine run.
 cloudflare_enabled: false
 
-# tunnel | dns — tunnel needs no inbound ports
+# tunnel | dns
+#   tunnel  outbound only, nothing inbound. What this repository is built for.
+#   dns     Cloudflare proxies to a public origin address. Needs inbound 443 and
+#           puts the origin back on the internet — not implemented here.
 cloudflare_mode: tunnel
-cloudflare_api_token: "{{ vault_cloudflare_api_token }}"
-cloudflare_zone_id: "{{ vault_cloudflare_zone_id }}"
-cloudflare_tunnel_name: "jengasec"
+
+# ── Naming ──────────────────────────────────────────────────────────────────
+# .local cannot be used: it is reserved for mDNS and Cloudflare will not serve
+# it. This must be a real domain in a zone you control.
+cloudflare_public_domain: "{{ jengasec_public_domain | default('jengasec.example') }}"
+cloudflare_public_hostname: "platform.{{ cloudflare_public_domain }}"
+
+# ── cloudflared ─────────────────────────────────────────────────────────────
+# From Cloudflare's APT repository, key pinned in /etc/apt/keyrings and the
+# source scoped with signed-by=. This is the SECOND third-party APT source in
+# the repository (Grafana was the first) — both are recorded in
+# docs/decisions.md.
+cloudflare_package: cloudflared
+cloudflare_service_name: cloudflared
+cloudflare_config_dir: /etc/cloudflared
+cloudflare_apt_key_url: "https://pkg.cloudflare.com/cloudflare-main.gpg"
+cloudflare_apt_keyring: /etc/apt/keyrings/cloudflare-main.gpg
+cloudflare_apt_repo: "deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bookworm main"
+
+cloudflare_user: cloudflared
+cloudflare_group: cloudflared
+
+# ── Credentials ─────────────────────────────────────────────────────────────
+# The token from Zero Trust > Networks > Tunnels. It authenticates this host as
+# the tunnel and is equivalent to a credential for your public hostname.
+cloudflare_tunnel_token: "{{ vault_cloudflare_tunnel_token | default('') }}"
+cloudflare_tunnel_name: jengasec
+
+# ── Origin ──────────────────────────────────────────────────────────────────
+# cloudflared connects to nginx over HTTPS on the loopback, not plain HTTP.
+#
+# Both are on one host, so the traffic never crosses a wire — but using HTTPS
+# reuses the certificate the `certificates` role already issues, avoids adding a
+# loopback-only HTTP listener that would need its own nginx server block, and
+# keeps the redirect logic in the site config untouched.
+cloudflare_origin_url: "https://127.0.0.1:443"
+
+# The certificate is issued for the internal name, so SNI must present that name
+# or nginx serves the default vhost and TLS verification fails.
+cloudflare_origin_server_name: "{{ nginx_server_name | default('platform.' ~ (jengasec_domain | default('jengasec.local'))) }}"
+
+# The internal CA, so cloudflared can actually verify the origin certificate.
+# The alternative — noTLSVerify — turns the hop into unauthenticated encryption,
+# which on loopback is nearly harmless and is still the wrong habit to teach.
+cloudflare_origin_ca_pool: /etc/ssl/jengasec/ca/jengasec-ca.crt
+cloudflare_origin_no_tls_verify: false
+
+# ── Ingress ─────────────────────────────────────────────────────────────────
+# Rules are matched in order. The template appends a catch-all http_status: 404;
+# cloudflared REFUSES TO START without one, and the error does not say so.
+cloudflare_ingress_rules: []
+
+# ── Tunnel behaviour ────────────────────────────────────────────────────────
+cloudflare_protocol: auto           # quic, falling back to http2
+cloudflare_loglevel: info
+
+# Four connections to different Cloudflare edge locations, so losing one does
+# not drop the site. Four is cloudflared's default and is right here.
+cloudflare_ha_connections: 4
+
+# Must exceed nginx's proxy_read_timeout, which exceeds gunicorn's. Each layer
+# more patient than the one behind it, or the outer one gives up on work still
+# in progress.
+cloudflare_connect_timeout: 30s
+cloudflare_tls_timeout: 10s
+cloudflare_keepalive_connections: 100
+cloudflare_keepalive_timeout: 90s
+
+# ── Metrics ─────────────────────────────────────────────────────────────────
+# Loopback only. Useful for a Prometheus scrape later; exposed to nothing now.
+cloudflare_metrics_bind: "127.0.0.1:2000"
+
+# ── Cloudflare Access ───────────────────────────────────────────────────────
+# An identity check at Cloudflare's edge BEFORE a request reaches Django.
+#
+# /admin/ controls every score. With the platform on the internet, Django's
+# login is otherwise the only thing between an attacker and the scoring data.
+# Access means a stolen password alone is not enough.
+#
+# Free for up to 50 users on Zero Trust.
+cloudflare_access_enabled: true
+cloudflare_access_paths:
+  - /admin
+cloudflare_access_app_name: "JengaSec admin"
+cloudflare_access_session_duration: "8h"
+
+# Who may pass. Emails, or a whole domain via cloudflare_access_email_domain.
+cloudflare_access_allowed_emails: []
+cloudflare_access_allowed_email_domain: "strathmore.edu"
+
+# API credentials. The token needs Access: Organizations, Identity Providers,
+# and Groups: Edit — a DIFFERENT permission set from the tunnel token.
+cloudflare_api_token: "{{ vault_cloudflare_api_token | default('') }}"
+cloudflare_account_id: "{{ vault_cloudflare_account_id | default('') }}"
+cloudflare_zone_id: "{{ vault_cloudflare_zone_id | default('') }}"
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+# `cloudflared tunnel route dns` creates the CNAME, but that needs a certificate
+# from `cloudflared login`, which is interactive. Creating the record in the
+# dashboard when you create the tunnel is simpler and is what the runbook says.
+cloudflare_manage_dns: false
 cloudflare_dns_records: []
-# orange cloud — hides the origin address
 cloudflare_proxied: true

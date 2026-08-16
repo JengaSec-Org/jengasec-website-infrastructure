@@ -3,7 +3,7 @@ galaxy_info:
   role_name: cloudflare
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: Public access via Cloudflare DNS, Tunnel, and WAF.
+  description: Cloudflare Tunnel and Access, so the platform is reachable off campus.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
@@ -14,5 +14,11 @@ galaxy_info:
   galaxy_tags:
     - jengasec
     - infrastructure
+    - cloudflare
+    - tunnel
 
+# nginx and certificates must have run — the tunnel forwards to nginx over TLS
+# and verifies it against the internal CA. Ordered in playbooks/cloudflare.yml
+# rather than declared here; the role asserts both at run time with messages
+# that name the fix.
 dependencies: []

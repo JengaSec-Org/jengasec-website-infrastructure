@@ -1,0 +1,53 @@
+---
+# Lab web host — server1, 1.5 GB.
+
+firewall_rules_group:
+  - port: 443
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "HTTPS — host-only network"
+  - port: 80
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "HTTP redirect — open in the lab so you can watch it redirect"
+
+# ── Gunicorn ────────────────────────────────────────────────────────────────
+# Two workers, not (2 x cores) + 1. A VirtualBox VM reports the host's core
+# count, so the formula would ask for 9 workers on a 1.5 GB box — each one a
+# full Python process holding its own copy of Django. The OOM killer would
+# arrive before the first request did.
+gunicorn_workers: 2
+gunicorn_timeout: 120
+
+# ── Django ──────────────────────────────────────────────────────────────────
+django_debug: false
+django_allowed_hosts:
+  - "platform.{{ jengasec_domain }}"
+  - "192.168.56.11"
+  - "localhost"
+
+# The console backend, so password-reset mails print to the journal instead of
+# needing a real SMTP server. Watch them with: journalctl -u gunicorn -f
+django_email_backend: "django.core.mail.backends.console.EmailBackend"
+
+django_db_name: jengasec
+django_db_user: jengasec
+django_db_host: "192.168.56.12"
+django_db_port: 5432
+django_db_sslmode: prefer
+
+# ── nginx ───────────────────────────────────────────────────────────────────
+nginx_server_name: "platform.{{ jengasec_domain }}"
+nginx_server_aliases:
+  - "192.168.56.11"
+
+# HSTS stays off. It is the one setting with no server-side undo — turn it on
+# in a lab and your own browser will refuse plain HTTP to that address for a
+# year, including after you have deleted the VM.
+nginx_hsts_enabled: false
+
+# ── Ollama ──────────────────────────────────────────────────────────────────
+# Not installed in the lab. The AI evaluation paths will error when exercised,
+# which is expected — the platform's other functions do not depend on it.
+ollama_base_url: "http://localhost:11434"
+ollama_model: llama3
