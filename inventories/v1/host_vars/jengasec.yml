@@ -1,0 +1,92 @@
+---
+# jengasec — the one v1 VM. Web + database + DNS + backup + monitoring.
+# Debian 12 guest on Server 3 (Proxmox), 4 vCPU / 8 GB / 60 GB.
+#
+# This is production's server1.yml + server2.yml + server3.yml merged. When the
+# platform splits back out to three machines, split this file the same way.
+
+# ── Identity ────────────────────────────────────────────────────────────────
+inventory_hostname_short: jengasec
+common_hostname: "jengasec.{{ jengasec_domain }}"
+host_role_description: "v1 all-in-one — nginx, gunicorn, Django, PostgreSQL, Redis, Bind9, Prometheus, Grafana, backup"
+
+# ── Network ─────────────────────────────────────────────────────────────────
+# Consumed by roles/networking/templates/interfaces.j2. enp0s18 is what Proxmox's
+# virtio NIC is named under Debian 12 — confirm with `ip -brief link show`
+# before running the networking role.
+networking_interface: enp0s18
+networking_address: 192.168.40.11
+networking_netmask: 255.255.255.0
+networking_gateway: "{{ jengasec_network_gateway }}"
+networking_dns_servers:
+  - 127.0.0.1                            # its own Bind9, once the dns role has run
+  - 192.168.43.5                         # the lab resolver — also Bind9's forwarder
+networking_dns_search: "{{ jengasec_domain }}"
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+# 8 GB shared by everything. PostgreSQL must not be swapped out — group_vars/
+# database sets vm.swappiness to 1 — but a swap file is still the difference
+# between a slow judging session and an OOM-killed one.
+os_swap_enabled: true
+os_swap_size_mb: 4096
+
+# Every backup lives on this same disk, so a full disk is a silent disaster.
+os_disk_usage_warn_percent: 75
+
+# ── Certificates ────────────────────────────────────────────────────────────
+# One certificate, every name the box answers to.
+certificates_common_name: "platform.{{ jengasec_domain }}"
+certificates_subject_alt_names:
+  - "DNS:platform.{{ jengasec_domain }}"
+  - "DNS:db.{{ jengasec_domain }}"
+  - "DNS:ns1.{{ jengasec_domain }}"
+  - "DNS:grafana.{{ jengasec_domain }}"
+  - "DNS:prometheus.{{ jengasec_domain }}"
+  - "DNS:backup.{{ jengasec_domain }}"
+  - "DNS:jengasec.{{ jengasec_domain }}"
+  - "IP:192.168.40.11"
+
+# ── Remote access ───────────────────────────────────────────────────────────
+# How the organisers reach Server 3 from off campus. This VM joins the tailnet
+# and advertises the lab segment (tailscale_advertise_routes defaults to
+# jengasec_network_cidr, the LAN interface to networking_interface), so a
+# laptop on the tailnet reaches this box AND the Proxmox UI on .7:8006 —
+# nothing is installed on the hypervisor. Needs vault_tailscale_auth_key, and
+# the route has to be approved by hand in the admin console after the first
+# run. docs/runbook.md §9b.
+tailscale_enabled: true
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  READ THIS BEFORE EDITING ANY group_vars/*/main.yml FIREWALL RULE.      │
+# │                                                                         │
+# │  This host is in seven groups and each defines firewall_rules_group.    │
+# │  Ansible keeps ONE of them (group precedence) and silently drops the    │
+# │  rest — so the per-group rules do not apply here. The union lives in    │
+# │  firewall_rules_host instead, which roles/firewall merges on top.       │
+# │  Add a port to a group file? Add it here too, or it is not open.        │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# PostgreSQL (5432), Redis (6379) and rsync (873) are absent on purpose: their
+# only client is this same machine, and group_vars here bind them to loopback.
+firewall_rules_host:
+  - port: 443
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "HTTPS — competition LAN only; off-campus arrives via the tunnel"
+  - port: 53
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (TCP — zone transfers and large responses)"
+  - port: 53
+    proto: udp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (UDP — normal queries)"
+  - port: 3000
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "Grafana UI"
+  - port: 9090
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "Prometheus UI"

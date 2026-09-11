@@ -1,0 +1,9 @@
+---
+# Variables for the `monitored` group — every host that Prometheus scrapes.
+
+# node_exporter must be reachable by the monitoring host, and by nothing else.
+firewall_rules_group:
+  - port: "{{ node_exporter_port | default(9100) }}"
+    proto: tcp
+    from: "127.0.0.1"                    # v1: Prometheus runs on this same box
+    comment: "node_exporter — scraped by Prometheus only"

@@ -1,0 +1,44 @@
+---
+# Variables for the `backup` group — backup target (server3).
+#
+# v1: the backup target is the SAME machine as the sources, so the pull is a
+# loopback SSH and the "compromised web host cannot delete its backups" property
+# does not hold. Acceptable for v1; moving backups off-box is the first thing to
+# do in v2. See roles/backup/README.md for the forced-command key this requires.
+
+firewall_rules_group: []
+
+backup_root: /srv/backup
+backup_retention_daily: 7
+backup_retention_weekly: 4
+backup_retention_monthly: 6
+backup_compression: gzip
+
+# Encryption at rest is OFF for v1. The role refuses to run unless the
+# recipient's GPG key is already in root's keyring on the backup host, and in v1
+# the backups sit on the same disk as the live data anyway — encrypting them
+# there protects against nothing the disk itself does not. Turn this on the
+# moment backups leave the box (v2), and generate/import the key first.
+backup_encrypt: false
+backup_gpg_recipient: "sucybersec@strathmore.edu"
+
+# What gets backed up, and from where.
+backup_sources:
+  - name: postgresql
+    host: jengasec
+    type: pg_dump
+    database: jengasec
+  - name: media
+    host: jengasec
+    type: rsync
+    path: "{{ app_media_dir }}"
+  - name: config
+    host: jengasec
+    type: rsync
+    path: /etc
+
+# A backup that has never been restored is a hope, not a backup. When the role
+# is implemented this triggers a monthly automated restore into a scratch
+# database, and alerts if it fails.
+backup_verify_enabled: true
+backup_verify_schedule: "0 3 1 * *"

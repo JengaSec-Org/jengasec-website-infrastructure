@@ -1,0 +1,115 @@
+---
+# Defaults for the `tailscale` role — remote ADMIN access.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  THIS IS NOT THE PUBLIC ROUTE. Cloudflare (Phase 9) is.                   │
+# │                                                                           │
+# │  Tailscale is how the ORGANISERS reach the servers from off campus —      │
+# │  SSH, Grafana, the Proxmox console — without opening an inbound port or   │
+# │  asking anyone for a firewall change. Every host on the tailnet gets a    │
+# │  stable 100.x address and a name; traffic between them is WireGuard,      │
+# │  keyed per device, with the key exchange brokered by Tailscale's control  │
+# │  plane. Nothing on the tailnet is reachable from the public internet.     │
+# │                                                                           │
+# │  Like cloudflared, tailscaled dials OUT and holds the connection. A       │
+# │  campus NAT that blocks everything inbound is not an obstacle; if direct  │
+# │  UDP hole-punching fails it falls back to a DERP relay (slower, still     │
+# │  end-to-end encrypted).                                                   │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# PREREQUISITES THAT EXIST OUTSIDE THIS REPOSITORY. Ansible cannot create them:
+#   1. a Tailscale account (a GitHub or Google login is enough — the free plan
+#      covers 100 devices and 3 users)
+#   2. an auth key: https://login.tailscale.com/admin/settings/keys
+#      → Generate auth key → REUSABLE off, EPHEMERAL off, PRE-APPROVED on,
+#        add the tag below. Copy it into the vault as vault_tailscale_auth_key.
+#   3. after the first run, APPROVE the advertised subnet route in the admin
+#      console (Machines → jengasec → Edit route settings). Until then the
+#      VM is reachable, but nothing behind it is.
+# The role's post-run report says which of these is still missing.
+
+# Off by default. Joining a tailnet gives every device on it a route to this
+# host — that is a decision, not a side effect of a routine run. v1 turns it on
+# in host_vars/jengasec.yml.
+tailscale_enabled: false
+
+# ── Package ─────────────────────────────────────────────────────────────────
+# From Tailscale's APT repository, key pinned in /etc/apt/keyrings and the
+# source scoped with signed-by= — the third third-party APT source in this
+# repository (Grafana, cloudflared). Recorded in docs/decisions.md.
+tailscale_package: tailscale
+tailscale_service_name: tailscaled
+tailscale_apt_key_url: "https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg"
+tailscale_apt_keyring: /etc/apt/keyrings/tailscale-archive-keyring.gpg
+tailscale_apt_repo: "deb [signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian bookworm main"
+
+# ── Identity on the tailnet ─────────────────────────────────────────────────
+# The auth key from the admin console. It enrols this host into YOUR tailnet —
+# treat it like an SSH private key. Never in group_vars; only via the vault.
+tailscale_auth_key: "{{ vault_tailscale_auth_key | default('') }}"
+
+# The name other tailnet devices use: `ssh jengasec@jengasec` with MagicDNS.
+tailscale_hostname: "{{ inventory_hostname }}"
+
+# ACL tags. A tagged node is owned by the tailnet, not by whichever organiser
+# generated the key — so it survives that person leaving, and ACLs can say
+# "tag:server may be reached by group:admins" instead of naming people.
+# The auth key must be permitted to apply these tags (set when generating it).
+tailscale_advertise_tags:
+  - "tag:jengasec-server"
+
+# ── Subnet routing ──────────────────────────────────────────────────────────
+# Advertise the lab segment so a laptop on the tailnet can reach EVERYTHING on
+# 192.168.40.0/24 — the Proxmox web UI on .7:8006, the iDRAC, the other VMs —
+# through this host, with nothing installed on any of them.
+#
+# Needs two things this role sets up: IP forwarding (a sysctl, deliberately
+# overriding the os role's ip_forward=0) and a UFW route rule from tailscale0
+# to the LAN interface. And one thing it cannot: route APPROVAL in the admin
+# console, which is a deliberate second human step.
+#
+# Empty list = plain node, no routing, no forwarding.
+tailscale_advertise_routes:
+  - "{{ jengasec_network_cidr | default('') }}"
+
+# The interface forwarded traffic leaves on. Same value the networking role
+# uses; ens18 on Proxmox, enp0s3 on VirtualBox.
+tailscale_lan_interface: "{{ networking_interface | default(ansible_default_ipv4.interface) }}"
+
+# Source-NAT forwarded packets to this host's LAN address, so the Proxmox host
+# sees a connection from 192.168.40.11 and needs no return route to 100.x.
+# The default and the right choice — turning it off means adding a static route
+# to every device you want to reach.
+tailscale_snat_subnet_routes: true
+
+# ── Behaviour ───────────────────────────────────────────────────────────────
+# Do NOT let Tailscale rewrite /etc/resolv.conf. This host runs Bind9 and the
+# networking role owns the resolver; MagicDNS overwriting it would break both.
+# Laptops want accept-dns; servers do not.
+tailscale_accept_dns: false
+
+# Accept routes OTHER nodes advertise. Off — a server has no business routing
+# to someone's home LAN.
+tailscale_accept_routes: false
+
+# Tailscale SSH — sshd replaced by tailscaled for tailnet connections, with the
+# tailnet identity as authentication. Off: the `ssh` role already hardens sshd
+# and it listens on 0.0.0.0, so the existing keys work over tailscale0 as they
+# do on the LAN. One SSH configuration to reason about, not two.
+tailscale_ssh: false
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+# Allow everything arriving on tailscale0. WireGuard has already authenticated
+# the peer as a member of the tailnet and Tailscale's ACLs decide who may talk
+# to what — a port list here would be a second, weaker copy of that policy.
+#
+# Applied with UFW directly rather than through the firewall role's rule list,
+# because that list is keyed by port and this is keyed by interface. It is
+# skipped, with a warning, when UFW is not installed yet (Phase 2 not run).
+tailscale_manage_firewall: true
+tailscale_interface: tailscale0
+
+# ── Where the enrolment state lives ─────────────────────────────────────────
+# tailscaled's node key and machine identity. Backed up by nothing on purpose:
+# a restored VM should re-enrol with a fresh key, not resurrect an old identity.
+tailscale_state_dir: /var/lib/tailscale

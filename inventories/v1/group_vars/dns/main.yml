@@ -1,0 +1,61 @@
+---
+# Variables for the `dns` group — Bind9 authoritative + resolver (v1: the jengasec VM).
+#
+# Adding a hostname to the network is an edit to dns_records below. You should
+# never need to open the dns role itself to add a record.
+
+firewall_rules_group:
+  - port: 53
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (TCP — zone transfers and large responses)"
+  - port: 53
+    proto: udp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "DNS (UDP — normal queries)"
+
+# ── Resolver behaviour ──────────────────────────────────────────────────────
+# Recursion is offered ONLY to the competition LAN. An open recursive resolver
+# on a public interface is an amplification weapon — never widen this.
+dns_recursion_allowed_from:
+  - "{{ jengasec_network_cidr }}"
+  - "localhost"
+
+# 192.168.43.5 is the lab's own resolver. 1.1.1.1 is deliberately absent:
+# something on this network answers for it locally (Server 3 baseline §7.3).
+dns_forwarders:
+  - 192.168.43.5
+  - 8.8.8.8
+
+# ── Zones ───────────────────────────────────────────────────────────────────
+dns_zone: "{{ jengasec_domain }}"
+dns_zone_ttl: 3600
+dns_zone_admin_email: "sucybersec.strathmore.edu"   # '@' becomes '.' in SOA records
+
+# Reverse zone for 192.168.40.0/24 — the octets are reversed, minus the host part.
+dns_reverse_zone: "40.168.192.in-addr.arpa"
+dns_reverse_prefix: "192.168.40"
+
+# Forward records. `name` is relative to the zone; use '@' for the zone apex.
+# v1: one machine answers to every name. The service CNAMEs are what the rest of
+# the platform uses (platform., db., grafana.), so when the tiers split onto
+# separate VMs only the A records change.
+dns_records:
+  - { name: "@",         type: A,     value: "192.168.40.11" }
+  - { name: "ns1",       type: A,     value: "192.168.40.11" }
+  - { name: "jengasec",  type: A,     value: "192.168.40.11" }
+  - { name: "proxmox",   type: A,     value: "192.168.40.7" }       # Server 3 hypervisor
+  - { name: "platform",  type: CNAME, value: "jengasec" }           # the Django app
+  - { name: "db",        type: CNAME, value: "jengasec" }
+  - { name: "backup",    type: CNAME, value: "jengasec" }
+  - { name: "grafana",   type: CNAME, value: "jengasec" }
+  - { name: "prometheus", type: CNAME, value: "jengasec" }
+
+# PTR records, generated from the last octet.
+dns_reverse_records:
+  - { octet: "7",  name: "proxmox.{{ jengasec_domain }}." }
+  - { octet: "11", name: "jengasec.{{ jengasec_domain }}." }
+
+# Zone transfers are refused by default. Add a secondary's address here only if
+# you actually run one.
+dns_allow_transfer: []

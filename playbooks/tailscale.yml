@@ -1,0 +1,51 @@
+---
+# Remote admin access via Tailscale
+#
+#   make tailscale INVENTORY=inventories/v1
+#
+# Joins the host to the organisers' tailnet and advertises the lab segment, so
+# SSH, Grafana and the Proxmox console are reachable from off campus WITHOUT
+# opening an inbound port. This is admin access — Phase 9's Cloudflare Tunnel
+# is still the only public route.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  THREE THINGS MUST EXIST IN TAILSCALE FIRST. Ansible cannot create them.  │
+# │                                                                           │
+# │    1. an account (GitHub or Google login; the free plan is enough)        │
+# │    2. an auth key — pre-approved, tagged tag:jengasec-server — from       │
+# │       https://login.tailscale.com/admin/settings/keys, into the vault as  │
+# │       vault_tailscale_auth_key                                            │
+# │    3. AFTER this run: approve the advertised route in the admin console   │
+# │                                                                           │
+# │  docs/runbook.md §9b walks through all three.                             │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Safe to run any time after bootstrap. Run it again after `make networking`
+# if you ran it before UFW existed, so the interface rules get applied.
+
+- name: "Remote admin access — Tailscale"
+  hosts: infra
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: tailscale
+      tags: [tailscale]
+
+  post_tasks:
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg:
+          - "Tailscale run complete on {{ inventory_hostname }}."
+          - ""
+          - "1. Approve the subnet route (once):"
+          - "   https://login.tailscale.com/admin/machines → {{ inventory_hostname }} → Edit route settings"
+          - ""
+          - "2. Test from OFF campus — a phone on mobile data with the Tailscale app:"
+          - "   ssh {{ ansible_user | default('jengasec') }}@{{ tailscale_hostname }}"
+          - "   https://192.168.40.7:8006      # Proxmox, through the subnet route"
+          - ""
+          - "3. Lock down who may reach it — tailnet ACLs, docs/runbook.md §9b."
+          - "   Until you do, every device on the tailnet can reach the whole lab."
+      when: tailscale_enabled | bool
+      tags: [always]

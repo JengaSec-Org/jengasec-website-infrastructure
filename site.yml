@@ -35,6 +35,13 @@
 - name: Import Phase 3 — security hardening
   ansible.builtin.import_playbook: playbooks/security.yml
 
+# ── Remote admin access ─────────────────────────────────────────────────────
+# Tailscale, so organisers can reach the hosts from off campus. Sits here, not
+# in Phase 9, because it is useful before the platform exists and it is NOT the
+# public route — Cloudflare is. Off by default; v1 enables it in host_vars.
+- name: Import remote admin access — Tailscale
+  ansible.builtin.import_playbook: playbooks/tailscale.yml
+
 # ── Phase 5 — Database ──────────────────────────────────────────────────────
 # Before the platform: Django's migrations need somewhere to run.
 - name: Import Phase 5 — database

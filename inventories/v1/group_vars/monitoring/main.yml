@@ -1,0 +1,32 @@
+---
+# Variables for the `monitoring` group — Prometheus + Grafana (server3).
+# The `monitoring` role is a Phase 7 stub; this file defines its contract.
+
+firewall_rules_group:
+  - port: 3000
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "Grafana UI"
+  - port: 9090
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "Prometheus UI"
+
+# ── Prometheus ──────────────────────────────────────────────────────────────
+prometheus_retention_time: 30d
+prometheus_retention_size: 8GB          # shares a 60 GB disk with everything else; cap it
+prometheus_scrape_interval: 30s
+prometheus_evaluation_interval: 30s
+
+# Built from the `monitored` inventory group rather than hand-listed, so a new
+# server is scraped the moment it joins the group.
+prometheus_scrape_targets: "{{ groups['monitored'] | default([]) }}"
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+grafana_admin_user: admin
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
+grafana_anonymous_access: false
+
+# ── node_exporter (installed on every host in `monitored`) ──────────────────
+node_exporter_port: 9100
+node_exporter_version: "1.8.2"

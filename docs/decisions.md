@@ -246,6 +246,7 @@ can install that vendor's packages and nothing else.
 |---|---|---|
 | `apt.grafana.com` | grafana | Yes — `grafana_enabled: false`; Prometheus has a usable UI |
 | `pkg.cloudflare.com` | cloudflared | Only by not being reachable off campus |
+| `pkgs.tailscale.com` | tailscale | Yes — `tailscale_enabled: false`; then the lab is admin-only from inside the rack |
 
 **MinIO goes the other way** — no repository exists, so it is a pinned `.deb`
 with a checksum, and its updates are manual. That is a genuine argument against

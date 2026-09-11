@@ -1,0 +1,20 @@
+---
+# Handlers for the `tailscale` role.
+
+# `sysctl --system` re-reads every file under /etc/sysctl.d in order, so the
+# os role's 60-jengasec.conf and this role's 99-tailscale.conf are applied
+# together and the later one wins — the same result as a reboot.
+- name: Reload sysctl for tailscale
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: true
+  listen: "reload sysctl for tailscale"
+
+# Restart, not reload — tailscaled has no config reload. Restarting drops every
+# tailnet connection for a second or two, including the one an organiser may be
+# administering the box over; it reconnects on its own.
+- name: Restart tailscaled
+  ansible.builtin.systemd:
+    name: "{{ tailscale_service_name }}"
+    state: restarted
+  listen: "restart tailscaled"

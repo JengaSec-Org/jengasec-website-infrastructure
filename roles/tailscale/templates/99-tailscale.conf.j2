@@ -1,0 +1,9 @@
+# {{ common_managed_banner }}
+#
+# IP forwarding for the Tailscale subnet router. Sorts after 60-jengasec.conf,
+# which sets ip_forward=0 for every host, and overrides it on THIS host only —
+# it advertises {{ tailscale_routes_effective | join(', ') }} to the tailnet
+# and a router has to forward. Remove the routes from tailscale_advertise_routes
+# and the role deletes this file.
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1

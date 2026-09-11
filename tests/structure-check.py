@@ -220,8 +220,8 @@ for role_dir in sorted((ROOT / "roles").iterdir()):
         bad(f"{role_dir.name}: missing {', '.join(gaps)}")
         incomplete += 1
 print(f"  {len(roles_on_disk)} roles, {incomplete} incomplete")
-if len(roles_on_disk) != 30:
-    print(f"  NOTE: expected 30 roles, found {len(roles_on_disk)}")
+if len(roles_on_disk) != 31:
+    print(f"  NOTE: expected 31 roles, found {len(roles_on_disk)}")
 
 # ── 9. Handler references ───────────────────────────────────────────────────
 head("Handler references")

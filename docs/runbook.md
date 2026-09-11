@@ -307,6 +307,92 @@ curl --connect-timeout 5 https://<server1-public-address>/     # must time out
 
 ---
 
+## 9b. Remote admin access — Tailscale
+
+Phase 9 is for the public. This is for **you**: SSH, Grafana and the Proxmox
+console from home, with no inbound port and nothing installed on the
+hypervisor. The enrolled host advertises the lab segment, so every device on
+the tailnet can reach the whole LAN through it.
+
+Three things must exist **in Tailscale** first. Ansible cannot create them.
+
+### a. An account and the tag
+
+Sign up at https://login.tailscale.com (GitHub or Google login; the free plan
+covers 100 devices). Then in **Access Controls**, declare the tag the servers
+will carry and who may reach it. A minimal policy:
+
+```jsonc
+{
+  "tagOwners": {
+    "tag:jengasec-server": ["autogroup:admin"]
+  },
+  "acls": [
+    // Admins reach the servers and, through the subnet router, the whole lab.
+    { "action": "accept", "src": ["autogroup:admin"], "dst": ["tag:jengasec-server:*", "192.168.40.0/24:*"] }
+  ]
+}
+```
+
+Without an ACL, Tailscale's default is *everyone on the tailnet reaches
+everything* — fine while it is one organiser, wrong the moment a second person
+is invited.
+
+### b. An auth key, into the vault
+
+**Settings → Keys → Generate auth key**: Reusable **off**, Ephemeral **off**,
+Pre-approved **on**, Tags **`tag:jengasec-server`**. It shows once.
+
+```bash
+make vault-edit
+```
+
+```yaml
+vault_tailscale_auth_key: "tskey-auth-..."
+```
+
+A non-reusable key enrols one host. Rebuilding the VM means generating a new
+one — deliberate, so a key copied out of an old backup enrols nothing.
+
+### c. Run it, then approve the route
+
+```yaml
+# host_vars/<host>.yml — already true in inventories/v1
+tailscale_enabled: true
+```
+
+```bash
+make tailscale
+```
+
+The report ends with the host's `100.x` address and a warning that the route
+`192.168.40.0/24` is **not yet approved**. Approve it once:
+**Machines → the host → ⋯ → Edit route settings → tick the subnet.** Pre-approval
+via the auth key covers the *machine*, not its routes.
+
+### Test from off campus
+
+A phone on mobile data with the Tailscale app, signed into the same tailnet:
+
+```bash
+ssh jengasec@jengasec                # the host itself, by tailnet name
+```
+
+```
+https://192.168.40.7:8006            # Proxmox, through the subnet route
+```
+
+If the host answers and the Proxmox UI does not: the route is unapproved, or
+`sysctl net.ipv4.ip_forward` on the host is `0` — the role's README lists the
+rest.
+
+> **`make networking` before `make tailscale`, or run tailscale twice.** The
+> UFW rules that admit `tailscale0` are applied only when UFW exists. Running
+> the firewall role afterwards does not remove them, but `firewall_reset_before_apply`
+> does.
+
+---
+
 ## 10. Phase 10 — backups
 
 The backup host **pulls**, so it needs a key the source hosts accept. That takes

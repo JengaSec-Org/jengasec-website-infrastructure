@@ -1,0 +1,331 @@
+---
+# tailscale — remote admin access
+#
+# Joins the host to a Tailscale tailnet and, when routes are advertised, makes
+# it a subnet router for the lab segment. Read the banner in defaults/main.yml
+# first: this is how ORGANISERS reach the servers, not how the public does.
+
+- name: Report that Tailscale is disabled
+  ansible.builtin.debug:
+    msg: >-
+      tailscale_enabled is false, so {{ inventory_hostname }} is not joined to
+      a tailnet and is reachable only from the competition LAN. Turn it on in
+      host_vars once vault_tailscale_auth_key exists — see docs/runbook.md §9b.
+  when: not (tailscale_enabled | bool)
+  tags: [tailscale, always]
+
+# The routes list may contain an empty string when jengasec_network_cidr is
+# undefined. Strip it once here; every later decision reads this fact.
+- name: Work out which routes to advertise
+  ansible.builtin.set_fact:
+    tailscale_routes_effective: "{{ tailscale_advertise_routes | reject('equalto', '') | list }}"
+  tags: [tailscale, always]
+
+# ── Guards ──────────────────────────────────────────────────────────────────
+
+- name: Refuse to run without an auth key
+  ansible.builtin.assert:
+    that:
+      - tailscale_auth_key | length > 20
+    fail_msg: >-
+      vault_tailscale_auth_key is not set. Generate one at
+      https://login.tailscale.com/admin/settings/keys (pre-approved, tagged
+      {{ tailscale_advertise_tags | join(',') }}) and put it in the vault.
+      Ansible cannot create the tailnet; it can only enrol a host into one
+      that exists. See docs/runbook.md §9b.
+    success_msg: "Auth key present"
+  when: tailscale_enabled | bool
+  no_log: true
+  tags: [tailscale, always]
+
+- name: Refuse to advertise a route without a LAN interface
+  ansible.builtin.assert:
+    that:
+      - tailscale_lan_interface | length > 0
+    fail_msg: >-
+      tailscale_advertise_routes is set but tailscale_lan_interface is empty,
+      so the UFW route rule has no interface to forward out of. Set
+      networking_interface in host_vars (ens18 on Proxmox).
+    success_msg: "Forwarding out of {{ tailscale_lan_interface }}"
+  when:
+    - tailscale_enabled | bool
+    - tailscale_routes_effective | length > 0
+  tags: [tailscale, always]
+
+# ── Install ─────────────────────────────────────────────────────────────────
+
+- name: Ensure the keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: tailscale_enabled | bool
+  tags: [tailscale, packages]
+
+# Scoped with signed-by= below: this key can sign Tailscale's repository and
+# nothing else.
+- name: Fetch the Tailscale signing key
+  ansible.builtin.get_url:
+    url: "{{ tailscale_apt_key_url }}"
+    dest: "{{ tailscale_apt_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: tailscale_enabled | bool
+  tags: [tailscale, packages]
+
+- name: Add the Tailscale repository
+  ansible.builtin.apt_repository:
+    repo: "{{ tailscale_apt_repo }}"
+    filename: tailscale
+    state: present
+    update_cache: true
+  when: tailscale_enabled | bool
+  tags: [tailscale, packages]
+
+- name: Install tailscale
+  ansible.builtin.apt:
+    name: "{{ tailscale_package }}"
+    state: present
+  when: tailscale_enabled | bool
+  tags: [tailscale, packages]
+
+- name: Enable and start tailscaled
+  ansible.builtin.systemd:
+    name: "{{ tailscale_service_name }}"
+    enabled: true
+    state: started
+  when: tailscale_enabled | bool
+  tags: [tailscale, service]
+
+# ── IP forwarding ───────────────────────────────────────────────────────────
+# A subnet router is a router. The os role sets ip_forward=0 in
+# 60-jengasec.conf because the hosts are servers; this file sorts after it and
+# wins, deliberately and only on a host that advertises routes.
+
+- name: Enable IP forwarding for subnet routing
+  ansible.builtin.template:
+    src: 99-tailscale.conf.j2
+    dest: /etc/sysctl.d/99-tailscale.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - tailscale_enabled | bool
+    - tailscale_routes_effective | length > 0
+  notify: Reload sysctl for tailscale
+  tags: [tailscale, sysctl]
+
+- name: Remove the forwarding override when no routes are advertised
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-tailscale.conf
+    state: absent
+  when:
+    - tailscale_enabled | bool
+    - tailscale_routes_effective | length == 0
+  notify: Reload sysctl for tailscale
+  tags: [tailscale, sysctl]
+
+- name: Apply pending sysctl changes
+  ansible.builtin.meta: flush_handlers
+  tags: [tailscale]
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+# Interface-based rules, applied directly. The firewall role's list is keyed by
+# port; these are keyed by interface, and WireGuard has already authenticated
+# every packet that arrives on tailscale0.
+
+- name: Check whether UFW is installed
+  ansible.builtin.command:
+    cmd: which ufw
+  register: tailscale_ufw_present
+  changed_when: false
+  failed_when: false
+  when:
+    - tailscale_enabled | bool
+    - tailscale_manage_firewall | bool
+  tags: [tailscale, firewall]
+
+- name: Warn that the firewall rules were skipped
+  ansible.builtin.debug:
+    msg: >-
+      UFW is not installed on {{ inventory_hostname }} yet, so no rules were
+      added for {{ tailscale_interface }}. Nothing is blocked either — there is
+      no firewall. Re-run `make tailscale` after `make networking` so the rules
+      exist before UFW's default-deny does.
+  when:
+    - tailscale_enabled | bool
+    - tailscale_manage_firewall | bool
+    - tailscale_ufw_present.rc != 0
+  tags: [tailscale, firewall]
+
+- name: Allow inbound traffic on the tailnet interface
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ tailscale_interface }}"
+    comment: "Tailscale — peers are authenticated by WireGuard and tailnet ACLs"
+  when:
+    - tailscale_enabled | bool
+    - tailscale_manage_firewall | bool
+    - tailscale_ufw_present.rc == 0
+  tags: [tailscale, firewall]
+
+# The firewall role sets the routed policy to deny. This is the one exception:
+# tailnet → LAN, out of the LAN interface only.
+- name: Allow forwarding from the tailnet to the LAN
+  community.general.ufw:
+    rule: allow
+    route: true
+    interface_in: "{{ tailscale_interface }}"
+    interface_out: "{{ tailscale_lan_interface }}"
+    comment: "Tailscale subnet router — tailnet to {{ tailscale_routes_effective | join(',') }}"
+  when:
+    - tailscale_enabled | bool
+    - tailscale_manage_firewall | bool
+    - tailscale_ufw_present.rc == 0
+    - tailscale_routes_effective | length > 0
+  tags: [tailscale, firewall]
+
+# ── Enrol ───────────────────────────────────────────────────────────────────
+
+- name: Read the current Tailscale state
+  ansible.builtin.command:
+    cmd: tailscale status --json
+  register: tailscale_status_raw
+  changed_when: false
+  failed_when: false
+  when: tailscale_enabled | bool
+  tags: [tailscale, enrol, verify]
+
+- name: Parse the Tailscale state
+  ansible.builtin.set_fact:
+    tailscale_state: "{{ tailscale_status_raw.stdout | default('{}') | from_json }}"
+  when: tailscale_enabled | bool
+  tags: [tailscale, enrol, verify]
+
+# The flags shared by `tailscale up` (first enrolment) and `tailscale set`
+# (every later run). Tags and the auth key are only meaningful at enrolment.
+- name: Assemble the node preferences
+  ansible.builtin.set_fact:
+    tailscale_pref_flags: >-
+      --hostname={{ tailscale_hostname }}
+      --advertise-routes={{ tailscale_routes_effective | join(',') }}
+      --accept-dns={{ tailscale_accept_dns | bool | lower }}
+      --accept-routes={{ tailscale_accept_routes | bool | lower }}
+      --ssh={{ tailscale_ssh | bool | lower }}
+      --snat-subnet-routes={{ tailscale_snat_subnet_routes | bool | lower }}
+  when: tailscale_enabled | bool
+  tags: [tailscale, enrol]
+
+# --reset: the flags on this line are the WHOLE configuration, not a delta on
+# whatever was set by hand before. no_log because the auth key is on the line.
+- name: Join the tailnet
+  ansible.builtin.command:
+    cmd: >-
+      tailscale up --reset
+      --auth-key={{ tailscale_auth_key }}
+      --advertise-tags={{ tailscale_advertise_tags | join(',') }}
+      {{ tailscale_pref_flags }}
+  register: tailscale_up
+  changed_when: true
+  no_log: true
+  when:
+    - tailscale_enabled | bool
+    - tailscale_state.BackendState | default('NoState') != 'Running'
+  tags: [tailscale, enrol]
+
+# Already joined: compare the live preferences with what the inventory says
+# and only touch the node when they differ, so a second run changes nothing.
+- name: Read the live node preferences
+  ansible.builtin.command:
+    cmd: tailscale debug prefs
+  register: tailscale_prefs_raw
+  changed_when: false
+  when:
+    - tailscale_enabled | bool
+    - tailscale_state.BackendState | default('NoState') == 'Running'
+  tags: [tailscale, enrol]
+
+- name: Work out whether the preferences have drifted
+  ansible.builtin.set_fact:
+    tailscale_prefs_drifted: >-
+      {{ (prefs.AdvertiseRoutes | default([], true) | sort) != (tailscale_routes_effective | sort)
+         or (prefs.CorpDNS | default(true)) != (tailscale_accept_dns | bool)
+         or (prefs.RouteAll | default(false)) != (tailscale_accept_routes | bool)
+         or (prefs.RunSSH | default(false)) != (tailscale_ssh | bool)
+         or (prefs.NoSNAT | default(false)) == (tailscale_snat_subnet_routes | bool)
+         or (prefs.Hostname | default('')) != tailscale_hostname }}
+  vars:
+    prefs: "{{ tailscale_prefs_raw.stdout | from_json }}"
+  when:
+    - tailscale_enabled | bool
+    - tailscale_state.BackendState | default('NoState') == 'Running'
+  tags: [tailscale, enrol]
+
+- name: Apply the node preferences
+  ansible.builtin.command:
+    cmd: "tailscale set {{ tailscale_pref_flags }}"
+  when:
+    - tailscale_enabled | bool
+    - tailscale_state.BackendState | default('NoState') == 'Running'
+    - tailscale_prefs_drifted | bool
+  tags: [tailscale, enrol]
+
+# ── Verification ────────────────────────────────────────────────────────────
+
+- name: Wait for the node to be running
+  ansible.builtin.command:
+    cmd: tailscale status --json
+  register: tailscale_status_after
+  retries: 12
+  delay: 5
+  until: (tailscale_status_after.stdout | default('{}') | from_json).BackendState | default('') == 'Running'
+  changed_when: false
+  failed_when: false
+  when: tailscale_enabled | bool
+  tags: [tailscale, verify]
+
+- name: Read the tailnet address
+  ansible.builtin.command:
+    cmd: tailscale ip -4
+  register: tailscale_ip
+  changed_when: false
+  failed_when: false
+  when: tailscale_enabled | bool
+  tags: [tailscale, verify]
+
+- name: Report the node state
+  ansible.builtin.debug:
+    msg: >-
+      {% set st = tailscale_status_after.stdout | default('{}') | from_json %}
+      {{ 'Joined — ' ~ inventory_hostname ~ ' is ' ~ (tailscale_ip.stdout | default('?')) ~
+         ' on the tailnet as ' ~ (st.Self.HostName | default(tailscale_hostname)) ~ '.'
+         if st.BackendState | default('') == 'Running'
+         else 'NOT running (state ' ~ (st.BackendState | default('unknown')) ~ '). Check:
+              journalctl -u ' ~ tailscale_service_name ~ ' -n 50. The usual causes are
+              an expired or already-used auth key, a key not allowed to apply ' ~
+              (tailscale_advertise_tags | join(',')) ~ ', or no outbound 443/UDP.' }}
+  when: tailscale_enabled | bool
+  tags: [tailscale, verify]
+
+# The control plane refuses to route a subnet until a human approves it. The
+# node reports that in its health list; surface it here rather than leaving
+# someone to discover that the Proxmox UI is unreachable from home.
+- name: Report whether the subnet route still needs approval
+  ansible.builtin.debug:
+    msg: >-
+      {% set st = tailscale_status_after.stdout | default('{}') | from_json %}
+      {% set health = st.Health | default([], true) | select('search', '(?i)approv') | list %}
+      {{ 'Route ' ~ (tailscale_routes_effective | join(',')) ~ ' is advertised but NOT yet approved: '
+         ~ (health | join(' ')) ~ ' Approve it at https://login.tailscale.com/admin/machines → '
+         ~ inventory_hostname ~ ' → Edit route settings. Until then only this host is reachable.'
+         if health | length > 0
+         else 'Route ' ~ (tailscale_routes_effective | join(',')) ~ ' advertised; if the LAN is not
+              reachable from a tailnet device, confirm it is approved in the admin console.' }}
+  when:
+    - tailscale_enabled | bool
+    - tailscale_routes_effective | length > 0
+  tags: [tailscale, verify]

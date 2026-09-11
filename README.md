@@ -20,7 +20,7 @@ doubles as teaching material.
 |---|---|
 | Core | `common`, `os`, `systemd` |
 | Networking | `networking`, `dns`, `dhcp`, `firewall`, `loadbalancer` |
-| Security | `security`, `ssh`, `fail2ban`, `audit`, `filesystem-security`, `certificates`, `cloudflare` |
+| Security | `security`, `ssh`, `fail2ban`, `audit`, `filesystem-security`, `certificates`, `cloudflare`, `tailscale` |
 | Identity | `users` |
 | Application | `python`, `django`, `gunicorn`, `nginx`, `redis` |
 | Database | `postgresql` |
@@ -158,6 +158,7 @@ make platform  LIMIT=server1     # Phase 4 — Redis, gunicorn, Django, nginx
 make monitoring                  # Phase 7 — logging, Prometheus, Grafana
 make backup    LIMIT=server3     # Phase 10 — encrypted pull backups
 make cloudflare LIMIT=server1    # Phase 9 — the tunnel; read the runbook first
+make tailscale  LIMIT=server1    # remote admin access; runbook §9b
 ```
 
 Run each a second time. **It must report zero changed tasks** — that is the pass
@@ -176,7 +177,7 @@ site.yml             every phase, in order
 requirements.yml     Galaxy collections
 inventories/         production, staging, development, lab
 playbooks/           one per phase
-roles/               30 roles
+roles/               31 roles
 files/               shared static assets
 scripts/             preflight and helpers
 docs/                pre-deployment, runbook, decisions, secrets, variables, roles
@@ -193,7 +194,7 @@ tests/               syntax and structure checks
 | [docs/variables.md](docs/variables.md) | Variable precedence and every `group_vars` key |
 | [docs/secrets.md](docs/secrets.md) | ansible-vault workflow |
 | [docs/decisions.md](docs/decisions.md) | Why the stack looks like this |
-| [docs/roles.md](docs/roles.md) | All 30 roles and their implementation status |
+| [docs/roles.md](docs/roles.md) | All 31 roles and their implementation status |
 
 ## Contributing
 

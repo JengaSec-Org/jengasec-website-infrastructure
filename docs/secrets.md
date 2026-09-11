@@ -139,6 +139,7 @@ still has it.
 | `vault_ca_passphrase` | `certificates` — **the most sensitive one here** |
 | `vault_backup_gpg_passphrase` | `backup` |
 | `vault_cloudflare_*` | `cloudflare` (Phase 9) |
+| `vault_tailscale_auth_key` | `tailscale` — enrols the host in the tailnet; treat like a device key |
 | `vault_rndc_key` | `dns` |
 
 `vault_ca_passphrase` deserves the emphasis. It protects the internal CA key,

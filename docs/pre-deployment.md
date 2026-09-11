@@ -10,7 +10,7 @@ something below does not match, the code wins and this document is a bug.
 
 ## 1. What this is, and what it is not
 
-**All 30 roles are implemented.** No stubs remain.
+**All 31 roles are implemented.** No stubs remain.
 
 | Phase | Roles | Result |
 |---|---|---|

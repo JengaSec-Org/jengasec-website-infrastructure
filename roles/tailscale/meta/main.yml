@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: tailscale
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Tailscale node and subnet router for remote administration of the lab.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - tailscale
+    - wireguard
+    - vpn
+
+dependencies: []

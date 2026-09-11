@@ -1,0 +1,133 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Site-wide variables for the v1 single-VM deployment on Server 3.
+#
+# Precedence, lowest to highest:
+#   roles/<role>/defaults/main.yml   safe default shipped with the role
+#   group_vars/all/main.yml          THIS FILE — site-wide choices
+#   group_vars/<group>/main.yml      per-function overrides
+#   host_vars/<host>.yml             machine-specific facts (IP, interface)
+#
+# See docs/variables.md for the full key reference.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Identity ────────────────────────────────────────────────────────────────
+jengasec_org: "Strathmore Cybersecurity Club"
+# The INTERNAL name, served by Bind9 on the competition LAN.
+jengasec_domain: jengasec.local          # TODO: replace if you use a real domain
+
+# The PUBLIC name, served through the Cloudflare Tunnel.
+#
+# Split-horizon: both names reach the same platform. On campus, Bind9 resolves
+# the .local name and traffic goes straight to nginx. Off campus, Cloudflare
+# resolves the public name and traffic arrives through the tunnel.
+#
+# This MUST be a real domain in a zone you control. Cloudflare cannot serve
+# .local — it is reserved for mDNS — and the cloudflare role refuses to start
+# with one, because the failure at Cloudflare's end is opaque.
+jengasec_public_domain: jengasec.example   # TODO: replace with your real domain
+
+jengasec_environment: v1
+
+# The competition LAN. Used by the firewall (trusted sources), Bind9 (recursion
+# ACL), and DHCP (subnet declaration) — set it once, correctly, here.
+jengasec_network_cidr: "192.168.40.0/24"   # Kindaruma lab segment
+jengasec_network_gateway: "192.168.40.1"
+
+# ── Localisation ────────────────────────────────────────────────────────────
+# Matches TIME_ZONE in the platform's config/settings.py. Keeping the servers
+# and Django on the same zone is what makes log correlation possible during an
+# incident, so do not change one without the other.
+common_timezone: "Africa/Nairobi"
+common_locale: "en_US.UTF-8"
+
+# ── Banner stamped into every Ansible-managed file ──────────────────────────
+# Referenced by every template as {{ common_managed_banner }}. Anyone who finds
+# one of these files on a server knows edits will be overwritten on next run.
+common_managed_banner: >-
+  Managed by Ansible — jengasec-infrastructure.
+  Local edits WILL be overwritten. Change the template and re-run instead.
+
+# ── SSH ─────────────────────────────────────────────────────────────────────
+# Also consumed by hosts.yml (ansible_port) and by the firewall role's assert.
+# If you change this, you must be able to reach the box on the NEW port before
+# the next run, or you are locked out. Read docs/runbook.md first.
+ssh_port: 22
+
+# Only members of these groups may log in over SSH.
+ssh_allow_groups:
+  - sudo
+  - jengasec
+
+# ── Service accounts created on every host by the `users` role ──────────────
+# Passwords are never set here; these are key-only accounts. Hashes for any
+# account that genuinely needs one live in vault.yml as vault_<name>_password.
+users_service_accounts:
+  - name: jengasec
+    comment: "JengaSec administrator"
+    groups: [sudo, adm]
+    shell: /bin/bash
+    system: false
+    sudo_nopasswd: false
+
+  - name: deploy
+    comment: "Application deployment account"
+    groups: [jengasec]
+    shell: /bin/bash
+    system: false
+    # Restricted sudo — may only restart the app services, nothing else.
+    sudo_nopasswd: true
+    sudo_commands:
+      - "/usr/bin/systemctl restart gunicorn"
+      - "/usr/bin/systemctl restart nginx"
+      - "/usr/bin/systemctl status gunicorn"
+
+  - name: backup
+    comment: "Backup service account"
+    groups: []
+    shell: /usr/sbin/nologin
+    system: true
+    sudo_nopasswd: false
+
+  - name: monitoring
+    comment: "Prometheus node_exporter account"
+    groups: []
+    shell: /usr/sbin/nologin
+    system: true
+    sudo_nopasswd: false
+
+# Admin SSH public keys, installed for the `jengasec` account.
+# Drop the .pub files into files/ssh-keys/ and list the filenames here.
+users_admin_ssh_keys:
+  - jengasec-admin.pub                   # TODO: replace with your real key file
+
+# ── Firewall ────────────────────────────────────────────────────────────────
+# Rules that apply everywhere. Per-function rules (80/443, 5432, 53, 67) are
+# added in the matching group_vars file and merged by the firewall role.
+#
+# WARNING: the SSH rule below is what keeps you connected. The firewall role
+# asserts that ssh_port appears in the merged rule list and refuses to run if
+# it does not.
+firewall_rules_common:
+  - port: "{{ ssh_port }}"
+    proto: tcp
+    from: "{{ jengasec_network_cidr }}"
+    comment: "SSH from the competition LAN"
+
+# ── Application paths ───────────────────────────────────────────────────────
+# These mirror the platform's config/settings.py:
+#   STATIC_ROOT = BASE_DIR / "staticfiles"
+#   MEDIA_ROOT  = BASE_DIR / "media"
+# The nginx, storage, backup, and audit roles all derive their paths from these,
+# so the whole stack agrees on where the application lives.
+app_name: jengasec
+app_user: jengasec
+app_group: jengasec
+app_root: "/opt/jengasec"
+app_source_dir: "{{ app_root }}/app"
+app_venv_dir: "{{ app_root }}/venv"
+app_static_dir: "{{ app_source_dir }}/staticfiles"
+app_media_dir: "{{ app_source_dir }}/media"
+app_log_dir: "/var/log/jengasec"
+app_repo_url: "https://github.com/JengaSec-Org/jengasec-competition-platform.git"
+app_repo_branch: main

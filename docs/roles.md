@@ -1,15 +1,15 @@
 # Roles
 
-All 30 roles and their implementation status.
+All 31 roles and their implementation status.
 
 For what these roles actually do to a server, and what you must configure before
 running them, see [pre-deployment.md](pre-deployment.md).
 
-**All 30 implemented.** No stubs remain.
+**All 31 implemented.** No stubs remain.
 
-Five roles are implemented but **off by default**, because turning them on is a
+Seven roles are implemented but **off by default**, because turning them on is a
 decision rather than a default: `networking`, `dhcp`, `loadbalancer`, `storage`,
-`minio`, and `cloudflare`. Each says why in its own README.
+`minio`, `cloudflare`, and `tailscale`. Each says why in its own README.
 
 ---
 
@@ -83,11 +83,12 @@ decision rather than a default: `networking`, `dhcp`, `loadbalancer`, `storage`,
 | [`storage`](../roles/storage/README.md) | Mount points, fstab, quotas, disk guards | **off** — nothing to mount on local disks |
 | [`minio`](../roles/minio/README.md) | S3-compatible object storage | **off** — local disk plus nginx already works |
 
-### Phase 9 — Public access
+### Phase 9 — Off-campus access
 
 | Role | Does | Default |
 |---|---|---|
 | [`cloudflare`](../roles/cloudflare/README.md) | Tunnel + Access, so the platform is reachable off campus | **off** — needs a Cloudflare account, zone and tunnel first |
+| [`tailscale`](../roles/tailscale/README.md) | Tailnet node + subnet router, so the *organisers* can reach the servers and the lab LAN off campus | **off** — needs a Tailscale account and auth key; v1 turns it on |
 
 ### Phase 10 — Continuity
 
@@ -97,7 +98,7 @@ decision rather than a default: `networking`, `dhcp`, `loadbalancer`, `storage`,
 
 ---
 
-## The six that are off by default
+## The seven that are off by default
 
 Not unfinished — implemented, and switched off because enabling them is a
 decision:
@@ -110,6 +111,7 @@ decision:
 | `storage` | Nothing to mount on three local disks | You add a volume |
 | `minio` | Local disk plus nginx already works, and its updates are manual | Submissions outgrow one disk |
 | `cloudflare` | Exposes the platform to the internet | The Cloudflare prerequisites exist — see the runbook |
+| `tailscale` | Every device on the tailnet gets a route to this host and the LAN behind it | You need to administer the servers from off campus — see the runbook §9b |
 
 ## Adding a role
 
