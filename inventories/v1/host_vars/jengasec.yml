@@ -48,14 +48,10 @@ certificates_subject_alt_names:
   - "IP:192.168.40.11"
 
 # ── Remote access ───────────────────────────────────────────────────────────
-# How the organisers reach Server 3 from off campus. This VM joins the tailnet
-# and advertises the lab segment (tailscale_advertise_routes defaults to
-# jengasec_network_cidr, the LAN interface to networking_interface), so a
-# laptop on the tailnet reaches this box AND the Proxmox UI on .7:8006 —
-# nothing is installed on the hypervisor. Needs vault_tailscale_auth_key, and
-# the route has to be approved by hand in the admin console after the first
-# run. docs/runbook.md §9b.
-tailscale_enabled: true
+# No Tailscale and no Cloudflare in v1. People reach the VM from off campus
+# through the Strathmore VPN (FortiClient), then SSH to their own account —
+# jengasec_vpn_cidrs in group_vars/all opens SSH to the VPN's range.
+tailscale_enabled: false
 
 # ── Firewall ────────────────────────────────────────────────────────────────
 # ┌─────────────────────────────────────────────────────────────────────────┐

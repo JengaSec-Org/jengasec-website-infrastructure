@@ -12,15 +12,24 @@
 - name: Assert an administrator key is available before locking the host down
   ansible.builtin.assert:
     that:
-      - users_admin_ssh_keys | length > 0
+      - (users_admin_ssh_keys | length > 0) or
+        (users_service_accounts | selectattr('ssh_keys', 'defined')
+          | selectattr('groups', 'contains', 'sudo') | list | length > 0)
     fail_msg: >-
-      users_admin_ssh_keys is empty. The `ssh` role disables password
-      authentication, so applying it after this would leave
-      {{ inventory_hostname }} with no way in.
-      Put your public key in files/{{ users_ssh_key_dir }}/ and list the
-      filename in group_vars. See roles/users/README.md.
-    success_msg: "{{ users_admin_ssh_keys | length }} administrator key(s) to install"
-  when: users_lock_passwords | bool
+      No administrator has an SSH key: users_admin_ssh_keys is empty and no
+      account in the sudo group lists ssh_keys. The `ssh` role disables
+      password authentication, so applying it after this would leave
+      {{ inventory_hostname }} with no way in. Add at least one admin with a
+      key (v1: jengasec_people in group_vars/all), with the public key file in
+      files/{{ users_ssh_key_dir }}/. See roles/users/README.md.
+    success_msg: >-
+      {{ users_admin_ssh_keys | length }} shared and
+      {{ users_service_accounts | selectattr('ssh_keys', 'defined') | list | length }}
+      personal account(s) with keys
+  # With SSH passwords left on, nobody is locked out for want of a key.
+  when:
+    - users_lock_passwords | bool
+    - not (ssh_password_authentication | default(false) | bool)
   tags: [users, always]
 
 # ── Groups ──────────────────────────────────────────────────────────────────

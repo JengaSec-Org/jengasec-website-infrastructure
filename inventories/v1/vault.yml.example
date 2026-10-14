@@ -92,10 +92,8 @@ vault_replica_owner_password: "CHANGE_ME"
 # vault_portal_admin_token: "CHANGE_ME"
 
 # ── Local account passwords ─────────────────────────────────────────────────
-# A HASH, not a plaintext password. Generate with:
-#   mkpasswd --method=sha-512
-# or, without the whois package installed:
-#   python3 -c "import crypt; print(crypt.crypt(input(), crypt.mksalt(crypt.METHOD_SHA512)))"
+# Not used in v1. Everyone signs in as netadmin, whose password is set by hand
+# on the VM (`sudo passwd netadmin`), not from the vault.
 vault_jengasec_password_hash: "$6$CHANGE_ME"
 
 # ── Internal certificate authority ──────────────────────────────────────────

@@ -46,6 +46,9 @@ this (`firewall_rules_merged = common + group + host`, `roles/firewall/tasks/mai
 
 ## Stage 0 — Remote access first (Tailscale on the Proxmox host)
 
+> **Not used in v1.** Remote access is the Strathmore VPN instead — see
+> `docs/deployment-guide.md` §1. Kept for reference.
+
 Do this before anything else, while physically in the lab. Every later stage can then be done
 from home, including the VM console through the Proxmox UI — so a VM with broken networking is
 still fixable remotely.
@@ -271,6 +274,9 @@ the VM's `/etc/network/interfaces` — that's why Stage 4 put the static config 
 account/zone/token and the runbook says so.
 
 ## Stage 8 — The VM on the tailnet too (Ansible-managed)
+
+> **Not used in v1.** Remote access is the Strathmore VPN instead — see
+> `docs/deployment-guide.md` §1. Kept for reference.
 
 Stage 0 already gives you the whole lab through the host. This adds the VM as its own tailnet
 node, managed by the `tailscale` role like everything else on it: a stable name (`jengasec`), a

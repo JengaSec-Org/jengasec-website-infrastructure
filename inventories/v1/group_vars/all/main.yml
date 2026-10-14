@@ -67,15 +67,35 @@ common_managed_banner: >-
 # the next run, or you are locked out. Read docs/runbook.md first.
 ssh_port: 22
 
-# Only members of these groups may log in over SSH.
+# ── Who logs in: one shared account, by password ────────────────────────────
+# v1 decision: everyone signs in as `netadmin` (the account the Debian
+# installer created) with its password. No SSH keys, no per-person accounts.
+#
+# What that costs, so it is a choice and not an accident:
+#   - The logs cannot say WHO did something, only that netadmin did. The
+#     Strathmore remote-access plan asks for individual accounts (§4, §9).
+#   - Removing one person means changing the password for everyone.
+#   - A password can be guessed; a key cannot. What limits that here: SSH is
+#     reachable only from the lab LAN and the VPN range (firewall below),
+#     fail2ban bans an address after 3 failures, and MaxAuthTries is 3.
+# So: a long password (`openssl rand -base64 18` is a good one), handed over in
+# person, and changed whenever someone leaves the team:
+#     sudo passwd netadmin
+ssh_password_authentication: true
+
+# SSH accepts netadmin and nobody else. The website's `jengasec` account and
+# the service accounts are not logins.
+ssh_allow_users:
+  - netadmin
 ssh_allow_groups:
   - sudo
-  - jengasec
 
 # ── Service accounts created on every host by the `users` role ──────────────
-# Passwords are never set here; these are key-only accounts. Hashes for any
-# account that genuinely needs one live in vault.yml as vault_<name>_password.
-users_service_accounts:
+# Passwords are never set here; these are key-only accounts. netadmin is not
+# listed: the installer created it and its password is set by hand.
+users_service_accounts: "{{ jengasec_service_accounts }}"
+
+jengasec_service_accounts:
   - name: jengasec
     comment: "JengaSec administrator"
     groups: [sudo, adm]
@@ -109,10 +129,8 @@ users_service_accounts:
     system: true
     sudo_nopasswd: false
 
-# Admin SSH public keys, installed for the `jengasec` account.
-# Drop the .pub files into files/ssh-keys/ and list the filenames here.
-users_admin_ssh_keys:
-  - jengasec-admin.pub                   # TODO: replace with your real key file
+# No SSH keys in v1 — netadmin signs in with its password (see above).
+users_admin_ssh_keys: []
 
 # ── Firewall ────────────────────────────────────────────────────────────────
 # Rules that apply everywhere. Per-function rules (80/443, 5432, 53, 67) are
@@ -121,11 +139,24 @@ users_admin_ssh_keys:
 # WARNING: the SSH rule below is what keeps you connected. The firewall role
 # asserts that ssh_port appears in the merged rule list and refuses to run if
 # it does not.
-firewall_rules_common:
-  - port: "{{ ssh_port }}"
-    proto: tcp
-    from: "{{ jengasec_network_cidr }}"
-    comment: "SSH from the competition LAN"
+#
+# SSH is allowed from the lab LAN and from the Strathmore VPN's address range,
+# so people reach the VM from home through FortiClient. With password login on,
+# this restriction is what keeps the login prompt off the internet — never
+# widen it to `any`. The VPN range comes
+# from ICT (the remote-access plan, §22 "VPN source range") — do not guess it.
+# Until it is filled in, SSH works from the lab only.
+jengasec_vpn_cidrs: []
+  # - "10.x.x.x/xx"        # TODO: replace with the range ICT gives you
+
+firewall_rules_common: >-
+  {% set rules = [{'port': ssh_port, 'proto': 'tcp', 'from': jengasec_network_cidr,
+                   'comment': 'SSH from the lab LAN'}] %}
+  {% for cidr in jengasec_vpn_cidrs %}
+  {% set _ = rules.append({'port': ssh_port, 'proto': 'tcp', 'from': cidr,
+                           'comment': 'SSH from the Strathmore VPN'}) %}
+  {% endfor %}
+  {{ rules }}
 
 # ── Application paths ───────────────────────────────────────────────────────
 # These mirror the platform's config/settings.py:
