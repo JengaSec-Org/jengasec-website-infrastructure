@@ -86,7 +86,9 @@ PrivateTmp=yes
 # Everything read-only except these. The application writes uploads to media and
 # its own logs; the code directory itself stays read-only, so a compromise
 # cannot rewrite the application.
-ReadWritePaths={{ gunicorn_read_write_paths | join(' ') }}
+# '-' makes a missing path harmless: without it systemd refuses to start the
+# service at all ("unavailable resources") when, say, media/ does not exist yet.
+ReadWritePaths={% for path in gunicorn_read_write_paths %}-{{ path }}{{ ' ' if not loop.last }}{% endfor %}
 
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

@@ -47,6 +47,25 @@
     - Restart gunicorn
   tags: [gunicorn, units]
 
+# The flush below also fires "Restart gunicorn". On a first run the django role
+# has not yet created the virtualenv or the environment file, so that restart
+# can only fail ("unavailable resources": EnvironmentFile and WorkingDirectory
+# are missing) and would stop the play. The handler is skipped until both
+# exist; django's own reload at the end starts gunicorn instead.
+- name: Check whether the application is deployed yet
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ gunicorn_executable }}"
+    - "{{ app_root | default('/opt/jengasec') }}/.env"
+  register: gunicorn_app_files
+  tags: [gunicorn, always]
+
+- name: Record whether gunicorn can start
+  ansible.builtin.set_fact:
+    gunicorn_app_deployed: "{{ gunicorn_app_files.results | map(attribute='stat.exists') | min }}"
+  tags: [gunicorn, always]
+
 - name: Reload systemd so the new units are visible
   ansible.builtin.meta: flush_handlers
   tags: [gunicorn]

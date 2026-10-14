@@ -23,6 +23,9 @@
     name: "{{ gunicorn_service_name }}"
     state: restarted
   listen: "restart gunicorn"
+  # Skipped on a first run, before the django role has deployed the app — see
+  # "Check whether the application is deployed yet" in tasks/main.yml.
+  when: gunicorn_app_deployed | default(true) | bool
 
 # SIGHUP — gunicorn re-execs its workers while holding the socket open. Nothing
 # in flight is dropped. This is what a code deployment should use, and what the

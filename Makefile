@@ -13,9 +13,16 @@ LIMIT         ?= all
 PLAYBOOK_DIR  := playbooks
 ANSIBLE_ARGS  ?=
 
+# The vault sits next to hosts.yml, where Ansible does NOT read variables on
+# its own (only group_vars/ and host_vars/ are automatic). Without this every
+# vault_* value is silently empty — the first symptom is the certificates role
+# refusing to build a CA "without a passphrase" that is in fact in the vault.
+VAULT_FILE  = $(INVENTORY)/vault.yml
+VAULT_ARGS  = $(if $(wildcard $(VAULT_FILE)),-e @$(VAULT_FILE),)
+
 # Every target that talks to hosts honours LIMIT, e.g.
 #   make bootstrap LIMIT=server1
-RUN = ansible-playbook -i $(INVENTORY) --limit $(LIMIT) $(ANSIBLE_ARGS)
+RUN = ansible-playbook -i $(INVENTORY) --limit $(LIMIT) $(VAULT_ARGS) $(ANSIBLE_ARGS)
 
 .PHONY: help lint syntax structure check preflight ping facts \
         bootstrap networking security platform database monitoring \
