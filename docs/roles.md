@@ -74,7 +74,7 @@ decision rather than a default: `networking`, `dhcp`, `loadbalancer`, `storage`,
 | [`logging`](../roles/logging/README.md) | logrotate and rsyslog. Journald belongs to `os` |
 | [`monitoring`](../roles/monitoring/README.md) | Prometheus, node_exporter, Grafana, alert rules |
 | [`cron`](../roles/cron/README.md) | Certificate expiry, disk checks, temp cleanup |
-| [`deployment`](../roles/deployment/README.md) | Release, health check, rollback |
+| [`deployment`](../roles/deployment/README.md) | Release, application health check, forward repair |
 
 ### Phase 8 — Storage
 

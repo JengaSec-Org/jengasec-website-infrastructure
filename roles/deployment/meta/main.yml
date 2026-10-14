@@ -3,7 +3,7 @@ galaxy_info:
   role_name: deployment
   namespace: jengasec
   author: Strathmore Cybersecurity Club
-  description: Ship a revision to a running platform, verify it, roll back on failure.
+  description: Deploy and verify a revision, preserving state for forward repair.
   company: Strathmore University
   license: MIT
   min_ansible_version: "2.14"
