@@ -41,4 +41,6 @@ backup_sources:
 # is implemented this triggers a monthly automated restore into a scratch
 # database, and alerts if it fails.
 backup_verify_enabled: true
-backup_verify_schedule: "0 3 1 * *"
+# v1: one VM, so the restore test runs on this same host (default is server2).
+backup_verify_host: jengasec
+backup_verify_schedule: "*-*-01 03:00:00"   # systemd OnCalendar, NOT cron: 03:00 on the 1st
