@@ -7,10 +7,7 @@
 # Distinct from platform.yml: that one BUILDS the platform — installs nginx,
 # creates the virtualenv, writes the units. This one ships a new revision onto a
 # platform that already exists: pull, migrate, collectstatic, reload, health
-# check, roll back if the check fails.
-#
-# This is the playbook that runs most often, so it is the one that most needs to
-# be boring and reversible.
+# check. Failure preserves the current state for a compatible forward repair.
 #
 # PIN THE REVISION for a real release. The default of HEAD means "whatever main
 # happens to be", which is fine mid-development and wrong the week of the
@@ -38,8 +35,7 @@
           - "  cat {{ app_root | default('/opt/jengasec') }}/.deploy/releases.log"
           - "  journalctl -t jengasec-deploy --since today"
           - ""
-          - "To roll back, pin the previous SHA and skip migrations —"
-          - "going backwards, Django would otherwise try to apply migrations"
-          - "the older code does not have:"
-          - "  -e deployment_revision=<sha> -e deployment_run_migrations=false"
+          - "For a failure, preserve source, database, media, evidence and queues."
+          - "Contain unsafe operations and deploy a compatible versioned correction."
+          - "Code versions do not restore scores, database contents or runtime effects."
       tags: [always]

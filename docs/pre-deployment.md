@@ -396,7 +396,7 @@ with an unhelpful 403.
 | `grafana_anonymous_access` | `false` | Dashboards are useful reconnaissance |
 | `logging_remote_enabled` | `false` | **Worth turning on** — logs on a compromised host are evidence an attacker can edit |
 | `deployment_refuse_if_dirty` | `true` | Someone hot-fixed the server; deploying destroys the fix and the evidence |
-| `deployment_rollback_on_failure` | `true` | Restores **code, not the database** |
+| `deployment_rollback_on_failure` | `false` | `true` is rejected; preserve state for [forward repair](../roles/deployment/README.md#repair-forward-after-a-failure) |
 | `deployment_maintenance_page` | `false` | A reload is a pause of a second or two |
 
 ### Phases 8–10

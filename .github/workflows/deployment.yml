@@ -1,0 +1,41 @@
+---
+name: Deployment recovery
+
+on:
+  pull_request:
+    paths:
+      - roles/deployment/**
+      - playbooks/deployment.yml
+      - tests/deployment-check.py
+      - tests/structure-check.py
+      - .github/workflows/deployment.yml
+  push:
+    branches: [main]
+    paths:
+      - roles/deployment/**
+      - playbooks/deployment.yml
+      - tests/deployment-check.py
+      - tests/structure-check.py
+      - .github/workflows/deployment.yml
+
+permissions:
+  contents: read
+
+jobs:
+  deployment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        ansible: ["~=2.14.0", "~=2.19.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install 'ansible-core${{ matrix.ansible }}' PyYAML Jinja2
+      - name: Check repository structure
+        run: python tests/structure-check.py
+      - name: Exercise deployment failure and forward repair
+        run: python tests/deployment-check.py
