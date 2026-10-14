@@ -34,18 +34,21 @@ jengasec_environment: v1
 jengasec_network_cidr: "192.168.40.0/24"   # Kindaruma lab segment
 jengasec_network_gateway: "192.168.40.1"
 
-# The venue network — where participants, judges and staff sit during the
-# event (jengasec-cyberrange-infrastructure, contracts/address-plan.md). The
-# web VM serves the site to them directly; see the venue section in
-# group_vars/web. VLAN numbers are still "NET to confirm" there: if the plan
-# changes, this list is the only thing to edit.
+# Who may reach the website at the event — from NET's "JengaSec VLANs and IP
+# ranges" (14 Oct 2026, also contracts/address-plan.md in the range repo).
+# Everyone at the venue is on the one Wi-Fi, VLAN 105; VLANs 102-104, 106 and
+# 107 exist but have no wall ports, so they are not listed. If NET change the
+# plan, this list is the only thing to edit.
 jengasec_venue_cidrs:
-  - "10.102.0.0/24"     # VLAN 102 Staff
-  - "10.103.0.0/24"     # VLAN 103 Judges
-  - "10.104.0.0/24"     # VLAN 104 AI Red
-  - "10.105.0.0/22"     # VLAN 105 App Red
-  - "10.106.0.0/24"     # VLAN 106 AI Blue
-  - "10.107.0.0/23"     # VLAN 107 App Blue
+  - "10.105.0.0/22"     # VLAN 105 Wi-Fi "JengaSec" — everyone at the venue
+  - "10.109.0.0/24"     # VLAN 109 back-end servers (deploy agent, observability)
+  - "10.63.0.0/24"      # WireGuard: staff and judges
+  - "10.60.0.0/14"      # WireGuard: App Red, App Blue, AI Blue (10.60-10.62)
+  - "10.64.0.0/16"      # WireGuard: AI Red
+
+# The website VM's second address, on VLAN 109, once NET add that network
+# card. It keeps 192.168.40.11 as well.
+jengasec_web_vlan_address: "10.109.0.10"
 
 # ── Localisation ────────────────────────────────────────────────────────────
 # Matches TIME_ZONE in the platform's config/settings.py. Keeping the servers

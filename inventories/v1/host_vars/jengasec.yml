@@ -46,6 +46,7 @@ certificates_subject_alt_names:
   - "DNS:jengasec.{{ jengasec_domain }}"
   - "DNS:{{ jengasec_venue_hostname }}"   # the name participants type at the venue
   - "IP:192.168.40.11"
+  - "IP:{{ jengasec_web_vlan_address }}"   # VLAN 109, once that NIC exists
 
 # ── Remote access ───────────────────────────────────────────────────────────
 # No Tailscale and no Cloudflare in v1. People reach the VM from off campus

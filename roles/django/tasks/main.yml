@@ -283,8 +283,12 @@
       pg_hba.conf has an entry for user '{{ django_db_user }}' from this
       address.
       {% endif %}
-      Output was:
-      {{ django_db_check.stderr | default(django_db_check.stdout) | default('') | truncate(400) }}
+      If the last line below is not a connection error (KeyError, ImportError,
+      ModuleNotFoundError...), the database is fine and that line is the real
+      problem. Last lines of the output — Python puts the actual error at the
+      END of a traceback:
+      {{ ((django_db_check.stderr_lines | default([]))
+          or (django_db_check.stdout_lines | default([])))[-8:] | join(' | ') }}
   when: django_db_check.rc != 0
   tags: [django, database]
 

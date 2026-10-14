@@ -53,27 +53,29 @@ django_allowed_hosts:
   - "platform.{{ jengasec_domain }}"          # internal, via Bind9
   - "platform.{{ jengasec_public_domain }}"   # public, via the Cloudflare Tunnel
   - "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+  - "{{ jengasec_web_vlan_address }}"         # VLAN 109 address
   - "{{ jengasec_venue_hostname }}"           # venue, via the range's DNS
 
 # Email backend is left to the role: Brevo when vault_brevo_api_key is set
 # (same as Render), SMTP otherwise.
 
-# ── Website data: Neon, shared with Render ──────────────────────────────────
-# This VM and Render are one website with two front doors: both read and write
-# the SAME Neon database and the SAME bucket, so a registration on either is
-# on both at once. Neon is the only writable copy; the database VM keeps a
-# read-only copy of it (replica section below). The platform's
-# docs/VENUE-HOSTING.md has the reasoning, and the honest risk: Neon is on the
-# internet, so a campus outage takes this front door down too.
+# ── Website data: jengasec_web on the database VM (cutover) ─────────────────
+# The campus blocks outgoing port 5432, so this VM cannot reach Neon. Instead,
+# ONE copy accepts writes at a time:
+#   until the cutover   Render + Neon, as today
+#   at the cutover      Neon is exported at home and imported into jengasec_web
+#                       on the database VM — scripts/cutover/README.md
+#   from then on        THIS VM is the live site; Render is read-only/suspended
 #
 # All in the vault:
-#   vault_jengasec_db_url      the SAME Neon pooled URL as Render
-#   vault_django_secret_key    the SAME value as Render, or everyone signed in
-#                              on one front door is signed out on the other
-#   vault_s3_*                 the SAME Backblaze bucket and keys
+#   vault_jengasec_db_url      postgresql://jengasec_web:...@192.168.40.45:5432/jengasec_web?sslmode=prefer
+#                              — setup-database-vm.sh prints it
+#   vault_django_secret_key    the SAME value as Render, so passwords' reset
+#                              links and stored registry tokens keep working
+#   vault_s3_*                 the SAME Backblaze bucket and keys — uploaded files
+#                              stay where they are; only the database moves
 #   vault_brevo_api_key        the SAME Brevo key
-# vault_jengasec_db_url is required here: without it the site would fall back
-# to a local database that Render cannot see.
+# Required, so the site can never quietly start on an empty local database.
 django_require_db_url: true
 
 jengasec_venue_hostname: jengasec.range
