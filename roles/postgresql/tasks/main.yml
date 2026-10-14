@@ -39,9 +39,12 @@
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
-# `validate` runs the real binary against the candidate file before it replaces
-# the live one, so a bad setting fails the task rather than stopping the
-# database on next restart.
+# No `validate:` here. The postgres binary refuses to run as root, and
+# Ansible's validate runs as root against a temp file postgres cannot read.
+# Instead the file is written, then checked by the RUNNING server as the
+# postgres user (pg_file_settings re-reads the file without applying it), and
+# the previous file is put back if anything in it is wrong — so a bad setting
+# fails the task rather than stopping the database on its next restart.
 - name: Write postgresql.conf
   ansible.builtin.template:
     src: postgresql.conf.j2
@@ -50,9 +53,45 @@
     group: postgres
     mode: "0640"
     backup: true
-    validate: "/usr/lib/postgresql/{{ postgresql_version }}/bin/postgres --check-config -c config_file=%s"
   register: postgresql_conf
   notify: Reload postgresql
+  tags: [postgresql, config]
+
+- name: Check the new postgresql.conf for errors
+  ansible.builtin.command:
+    cmd: >-
+      psql -tAc "SELECT name || ': ' || error FROM pg_file_settings
+                 WHERE error IS NOT NULL AND sourcefile = '{{ postgresql_config_dir }}/postgresql.conf'"
+  become: true
+  become_user: postgres
+  register: postgresql_conf_errors
+  changed_when: false
+  when: postgresql_conf.changed
+  tags: [postgresql, config]
+
+- name: Put the previous postgresql.conf back
+  ansible.builtin.copy:
+    src: "{{ postgresql_conf.backup_file }}"
+    dest: "{{ postgresql_config_dir }}/postgresql.conf"
+    remote_src: true
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  when:
+    - postgresql_conf.changed
+    - postgresql_conf.backup_file is defined
+    - postgresql_conf_errors.stdout | default('') | length > 0
+  tags: [postgresql, config]
+
+- name: Refuse an invalid postgresql.conf
+  ansible.builtin.fail:
+    msg: >-
+      The rendered postgresql.conf has errors, so the previous file was put back
+      and nothing was reloaded: {{ postgresql_conf_errors.stdout_lines | join('; ') }}.
+      Fix the value in group_vars/database or roles/postgresql/defaults.
+  when:
+    - postgresql_conf.changed
+    - postgresql_conf_errors.stdout | default('') | length > 0
   tags: [postgresql, config]
 
 - name: Write pg_hba.conf

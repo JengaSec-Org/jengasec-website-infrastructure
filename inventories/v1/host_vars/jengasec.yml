@@ -73,15 +73,17 @@ tailscale_enabled: false
 # types the bare address is redirected to HTTPS instead of timing out.
 firewall_rules_host: "{{ firewall_rules_lab + firewall_rules_venue }}"
 
+# An expression rather than a {% for %} block, so it stays a list under
+# ansible-core 2.19+ (a block renders to text there).
 firewall_rules_venue: >-
-  {% set rules = [] %}
-  {% for cidr in jengasec_venue_cidrs | default([]) %}
-  {% for port in [80, 443] %}
-  {% set _ = rules.append({'port': port, 'proto': 'tcp', 'from': cidr,
-                           'comment': 'Venue network — ' ~ ('HTTP redirect' if port == 80 else 'HTTPS')}) %}
-  {% endfor %}
-  {% endfor %}
-  {{ rules }}
+  {{ (jengasec_venue_cidrs | default([])
+      | map('community.general.dict_kv', 'from')
+      | map('combine', {'port': 80, 'proto': 'tcp', 'comment': 'Venue network - HTTP redirect'})
+      | list)
+     + (jengasec_venue_cidrs | default([])
+      | map('community.general.dict_kv', 'from')
+      | map('combine', {'port': 443, 'proto': 'tcp', 'comment': 'Venue network - HTTPS'})
+      | list) }}
 
 firewall_rules_lab:
   - port: 443

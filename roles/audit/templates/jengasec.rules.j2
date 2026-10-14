@@ -152,7 +152,7 @@
 ## Reading a submission before the deadline, or altering a score after it, is
 ## exactly the kind of thing this event exists to detect. These paths hold the
 ## evidence.
-{% for path in audit_application_paths %}
+{% for path in audit_application_paths_present | default(audit_application_paths) %}
 -w {{ path }} -p wa -k jengasec_appdata
 {% endfor %}
 {% endif %}

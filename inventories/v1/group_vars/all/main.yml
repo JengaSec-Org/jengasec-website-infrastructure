@@ -149,14 +149,17 @@ users_admin_ssh_keys: []
 jengasec_vpn_cidrs: []
   # - "10.x.x.x/xx"        # TODO: replace with the range ICT gives you
 
+# One expression, not a {% for %} block: since ansible-core 2.19 a block
+# renders to TEXT, and `common + group + host` then fails with "can only
+# concatenate str". An expression keeps its list type in every version.
 firewall_rules_common: >-
-  {% set rules = [{'port': ssh_port, 'proto': 'tcp', 'from': jengasec_network_cidr,
-                   'comment': 'SSH from the lab LAN'}] %}
-  {% for cidr in jengasec_vpn_cidrs %}
-  {% set _ = rules.append({'port': ssh_port, 'proto': 'tcp', 'from': cidr,
-                           'comment': 'SSH from the Strathmore VPN'}) %}
-  {% endfor %}
-  {{ rules }}
+  {{ [{'port': ssh_port, 'proto': 'tcp', 'from': jengasec_network_cidr,
+       'comment': 'SSH from the lab LAN'}]
+     + (jengasec_vpn_cidrs
+        | map('community.general.dict_kv', 'from')
+        | map('combine', {'port': ssh_port, 'proto': 'tcp',
+                          'comment': 'SSH from the Strathmore VPN'})
+        | list) }}
 
 # ── Application paths ───────────────────────────────────────────────────────
 # These mirror the platform's config/settings.py:

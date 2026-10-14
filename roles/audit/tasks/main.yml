@@ -38,6 +38,40 @@
   when: "'enabled 2' in (audit_current_status.stdout | default(''))"
   tags: [audit, rules]
 
+# A watch whose parent directory does not exist is refused by the kernel
+# ("Error sending add rule data request (No such file or directory)"), and one
+# refused rule fails the whole load. The application lives under /opt/jengasec,
+# which `make platform` creates — AFTER this role in phase order. So the rules
+# only watch application paths that exist now; re-running `make security`
+# after the platform is up adds the rest.
+- name: Check which application paths exist yet
+  ansible.builtin.stat:
+    path: "{{ item | dirname }}"
+  loop: "{{ audit_application_paths }}"
+  register: audit_app_parents
+  when: audit_watch_application | bool
+  tags: [audit, rules]
+
+- name: Keep only application paths that can be watched now
+  ansible.builtin.set_fact:
+    audit_application_paths_present: >-
+      {{ audit_app_parents.results | default([])
+         | selectattr('stat', 'defined')
+         | selectattr('stat.exists')
+         | map(attribute='item') | list }}
+  tags: [audit, rules]
+
+- name: Report application paths not watched yet
+  ansible.builtin.debug:
+    msg: >-
+      Not watched yet, because the application is not deployed:
+      {{ audit_application_paths | difference(audit_application_paths_present) | join(', ') }}.
+      Run `make security` again after `make platform` to add them.
+  when:
+    - audit_watch_application | bool
+    - audit_application_paths | difference(audit_application_paths_present) | length > 0
+  tags: [audit, rules]
+
 - name: Install the JengaSec audit rules
   ansible.builtin.template:
     src: jengasec.rules.j2
