@@ -53,8 +53,74 @@ django_allowed_hosts:
   - "platform.{{ jengasec_domain }}"          # internal, via Bind9
   - "platform.{{ jengasec_public_domain }}"   # public, via the Cloudflare Tunnel
   - "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+  - "{{ jengasec_venue_hostname }}"           # venue, via the range's DNS
 
-django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
+# Email backend is left to the role: Brevo when vault_brevo_api_key is set
+# (same as Render), SMTP otherwise.
+
+# ── Website data: Neon, shared with Render ──────────────────────────────────
+# This VM and Render are one website with two front doors: both read and write
+# the SAME Neon database and the SAME bucket, so a registration on either is
+# on both at once. Neon is the only writable copy; the database VM keeps a
+# read-only copy of it (replica section below). The platform's
+# docs/VENUE-HOSTING.md has the reasoning, and the honest risk: Neon is on the
+# internet, so a campus outage takes this front door down too.
+#
+# All in the vault:
+#   vault_jengasec_db_url      the SAME Neon pooled URL as Render
+#   vault_django_secret_key    the SAME value as Render, or everyone signed in
+#                              on one front door is signed out on the other
+#   vault_s3_*                 the SAME Backblaze bucket and keys
+#   vault_brevo_api_key        the SAME Brevo key
+# vault_jengasec_db_url is required here: without it the site would fall back
+# to a local database that Render cannot see.
+django_require_db_url: true
+
+jengasec_venue_hostname: jengasec.range
+
+# Links in emails are opened from home, where jengasec.range does not resolve,
+# so they always point at the public site.
+django_site_url: "https://www.jengasec.com"
+
+# Plain-HTTP sign-in, ONLY if the internal-CA certificate is not ready in
+# time. nginx here already serves TLS from the internal CA, so this should stay
+# false; see "The HTTPS trap" in VENUE-HOSTING.md before turning it on.
+django_insecure_cookies: false
+
+# ── Read-only copy on the database VM ───────────────────────────────────────
+# Neon → jengasec_web on 192.168.40.45, one way, by logical replication. A
+# separate database from the range API's on the same server; the website never
+# reads or writes it. Switch on once logical replication is enabled in Neon and
+# the database VM's admin login is in the vault — roles/replica/README.md.
+replica_enabled: false
+replica_host: 192.168.40.45
+replica_port: 5432
+
+# ── Range portal API ────────────────────────────────────────────────────────
+# Registration with a WireGuard public key, VPN profiles for approved people,
+# and staff revocation all go through the range team's API on THIS VM, bound to
+# loopback — which is why the website backend must run here. Django calls it
+# server-side through services/portal_client.py (from the range team's kit);
+# the browser never sees the API or the token.
+#
+# Render cannot reach 127.0.0.1 on this VM, so these features work only on
+# this front door. Everything else is shared.
+#
+# PROVISIONAL: the environment names below are placeholders until the kit
+# arrives. Confirm them against portal_client.py before relying on them.
+django_portal_api_url: "http://127.0.0.1:8080"
+
+# Derived https:// origins for every name above, plus the bare-address http://
+# origin while insecure cookies are on — that is the only time a form can be
+# posted over plain HTTP.
+django_csrf_trusted_origins: >-
+  {{ django_allowed_hosts
+     | reject('equalto', '*')
+     | map('regex_replace', '^(.*)$', 'https://\\1')
+     | list
+     + ((['http://' ~ (ansible_default_ipv4.address | default('127.0.0.1')),
+          'http://' ~ jengasec_venue_hostname])
+        if (django_insecure_cookies | bool) else []) }}
 
 # ── nginx ───────────────────────────────────────────────────────────────────
 # server_name stays the internal name — the TLS certificate is issued for it,
@@ -62,6 +128,7 @@ django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
 # vhost answers both.
 nginx_server_aliases:
   - "platform.{{ jengasec_public_domain }}"
+  - "{{ jengasec_venue_hostname }}"
 
 # ── Cloudflare ──────────────────────────────────────────────────────────────
 # Off until the Cloudflare prerequisites exist — an account, a zone, a tunnel,
@@ -69,9 +136,9 @@ nginx_server_aliases:
 cloudflare_enabled: false
 cloudflare_access_allowed_email_domain: strathmore.edu
 
-# v1: PostgreSQL is on this same box, bound to loopback (see group_vars/
-# database). Setting JENGASEC_DB_NAME is what switches settings.py off SQLite,
-# so it must always be present.
+# Not used while vault_jengasec_db_url is set, which django_require_db_url
+# above insists on. Kept so the role's defaults stay complete if this VM is
+# ever pointed at a local database again.
 django_db_name: jengasec
 django_db_user: jengasec
 django_db_host: 127.0.0.1

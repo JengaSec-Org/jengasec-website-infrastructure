@@ -1,0 +1,7 @@
+---
+# Handlers for the `replica` role.
+
+- name: Reload systemd for replica
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "reload systemd for replica"

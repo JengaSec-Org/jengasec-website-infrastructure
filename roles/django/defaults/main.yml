@@ -42,7 +42,9 @@ django_manage: "{{ django_venv_dir }}/bin/python {{ django_source_dir }}/manage.
 
 django_debug: false                # MUST stay false in production
 django_allowed_hosts: []
-django_email_backend: "django.core.mail.backends.smtp.EmailBackend"
+# Empty when a Brevo key is present, so settings.py selects the Brevo backend
+# itself; SMTP otherwise. An explicit value here always wins over Brevo.
+django_email_backend: "{{ '' if django_brevo_api_key else 'django.core.mail.backends.smtp.EmailBackend' }}"
 
 # ── CSRF and proxy ──────────────────────────────────────────────────────────
 # Django 4+ rejects any POST whose Origin is not in CSRF_TRUSTED_ORIGINS. Behind
@@ -60,10 +62,68 @@ django_csrf_trusted_origins: >-
 # nginx sets the header; setting both means two sources for one policy.
 django_hsts_seconds: 0
 
+# Session idle timeout in seconds (DJANGO_SESSION_COOKIE_AGE). settings.py
+# defaults to one hour; empty leaves it there.
+django_session_cookie_age: ""
+
+# Absolute base for links inside emails (DJANGO_SITE_URL). On the venue
+# instance this stays the PUBLIC address: people open those emails from home,
+# where the venue name does not resolve.
+django_site_url: "https://{{ (django_allowed_hosts | reject('equalto', '*') | list | first) | default('localhost') }}"
+
+# ── Venue instance ──────────────────────────────────────────────────────────
+# DJANGO_INSECURE_COOKIES turns the secure flag off session and CSRF cookies so
+# sign-in works over plain HTTP before the internal-CA certificate exists. With
+# it off and no TLS, the login form accepts the password and silently bounces
+# back. Safe ONLY on an instance reachable solely from the isolated venue
+# VLANs — the role refuses it when the Cloudflare tunnel is enabled, and the
+# platform's own `preflight` treats it as a blocker on a public SITE_URL.
+django_insecure_cookies: false
+
+# ── Shared secrets with other instances ─────────────────────────────────────
+# All optional. Empty means the line is not written and settings.py uses its
+# own fallback, described next to each.
+#
+# DJANGO_TOKEN_KEY — Fernet key encrypting blue-team registry tokens. Empty:
+# derived from DJANGO_SECRET_KEY. Must match Render if both share a database.
+django_token_key: "{{ vault_django_token_key | default('') }}"
+
+# DJANGO_DEPLOY_TOKEN — guards /deployments/api/pending/ and /api/status/ for
+# the range's deploy agent. Empty: both endpoints answer 404.
+django_deploy_token: "{{ vault_django_deploy_token | default('') }}"
+
+# DJANGO_CRON_TOKEN — enables the /tasks/run/ reminder runner. Set it on ONE
+# instance only: two instances sharing a database and both holding it means
+# every reminder email is sent twice. Render holds it today, so it stays empty
+# here unless Render is retired.
+django_cron_token: "{{ vault_django_cron_token | default('') }}"
+
+# ── Range portal API ────────────────────────────────────────────────────────
+# The range team's API for WireGuard registration, VPN profiles and
+# revocation, called server-side by services/portal_client.py. Empty: not
+# written. PROVISIONAL names (PORTAL_API_URL, PORTAL_ADMIN_TOKEN) until the
+# kit confirms what portal_client.py reads.
+django_portal_api_url: ""
+django_portal_admin_token: "{{ vault_portal_admin_token | default('') }}"
+
 # ── Database ────────────────────────────────────────────────────────────────
-# Setting JENGASEC_DB_NAME is what switches settings.py off SQLite. It is always
-# written for that reason — an unset value means production silently running on
-# a SQLite file that no backup covers.
+# Two ways to point at PostgreSQL, matching settings.py:
+#
+#   1. django_db_url — the whole connection string (JENGASEC_DB_URL). Used for
+#      a hosted database such as Neon, shared with the Render instance. When
+#      set it WINS over everything below, and settings.py requires TLS unless
+#      the URL says otherwise.
+#   2. The individual django_db_* values — the local PostgreSQL this
+#      repository builds.
+#
+# One of the two is always written: with neither, settings.py falls back to a
+# SQLite file that no backup covers.
+django_db_url: "{{ vault_jengasec_db_url | default('') }}"
+
+# true on a host that must share its database with another front door
+# (Render): refuse to deploy without django_db_url rather than quietly using
+# a local database the other front door cannot see.
+django_require_db_url: false
 django_db_name: jengasec
 django_db_user: jengasec
 django_db_password: "{{ vault_postgresql_jengasec_password }}"
@@ -81,12 +141,35 @@ django_redis_password: "{{ vault_redis_password | default('') }}"
 django_ollama_base_url: "{{ ollama_base_url | default('http://localhost:11434') }}"
 django_ollama_model: "{{ ollama_model | default('llama3') }}"
 
-# ── SMTP ────────────────────────────────────────────────────────────────────
+# ── Email ───────────────────────────────────────────────────────────────────
+# Brevo over HTTPS (BREVO_API_KEY) is what Render uses, because Render blocks
+# outbound SMTP. Setting the key selects the Brevo backend in settings.py —
+# unless django_email_backend is also set, which always wins. So with Brevo,
+# set django_email_backend to "" and let the key choose.
+django_brevo_api_key: "{{ vault_brevo_api_key | default('') }}"
+
+# SMTP, used when django_email_backend is the SMTP backend.
 django_smtp_host: "{{ vault_smtp_host | default('localhost') }}"
 django_smtp_port: "{{ vault_smtp_port | default(587) }}"
 django_smtp_user: "{{ vault_smtp_user | default('') }}"
 django_smtp_password: "{{ vault_smtp_password | default('') }}"
 django_smtp_use_tls: true
+
+# DJANGO_DEFAULT_FROM_EMAIL. Empty: "JengaSec <smtp user>". Gmail rewrites a
+# From that does not match the SMTP account, and Brevo refuses an unverified
+# sender, so change it only together with the account.
+django_default_from_email: ""
+
+# ── Uploads (S3-compatible object storage) ──────────────────────────────────
+# Set django_s3_bucket and uploads go to the bucket instead of
+# django_media_dir. Required when this instance shares a database with Render:
+# the database then points at files in the bucket, and a local media
+# directory would hold only what was uploaded here. Backblaze B2 today.
+django_s3_bucket: "{{ vault_s3_bucket | default('') }}"
+django_s3_endpoint_url: "{{ vault_s3_endpoint_url | default('') }}"
+django_s3_region: "{{ vault_s3_region | default('') }}"
+django_s3_access_key_id: "{{ vault_s3_access_key_id | default('') }}"
+django_s3_secret_access_key: "{{ vault_s3_secret_access_key | default('') }}"
 
 # ── Deployment steps ────────────────────────────────────────────────────────
 django_run_migrations: true
@@ -102,6 +185,11 @@ django_superuser_create: false
 # as a report rather than a gate, because some of its warnings are answered by
 # nginx rather than by Django.
 django_run_deploy_check: true
+
+# The platform's own `manage.py preflight`: storage, email, tokens, cookie
+# settings. Also a report — it reaches out to the bucket and the mail
+# provider, and a slow provider should not fail the play.
+django_run_preflight: true
 
 # ── Guard ───────────────────────────────────────────────────────────────────
 # Refuse to deploy a checkout whose settings.py lacks the proxy and CSRF

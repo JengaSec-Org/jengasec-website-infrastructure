@@ -1,0 +1,18 @@
+# {{ common_managed_banner }}
+#
+# One pass of the Neon → {{ replica_host }} replica check. Started by the timer
+# of the same name; `systemctl start` it to run one by hand.
+
+[Unit]
+Description=JengaSec website database replica sync (Neon -> {{ replica_host }})
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile={{ replica_env_file }}
+ExecStart={{ replica_sync_script }}
+# A rebuild is seconds; anything near this means a hung connection.
+TimeoutStartSec=15min
+PrivateTmp=true
+NoNewPrivileges=true

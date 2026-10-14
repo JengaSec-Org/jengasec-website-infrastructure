@@ -1,0 +1,16 @@
+# {{ common_managed_banner }}
+#
+# Re-checks the replica on a schedule, because Render runs migrations on Neon
+# outside Ansible and every schema change stops replication until the copy is
+# rebuilt.
+
+[Unit]
+Description=Run the JengaSec database replica sync every few minutes
+
+[Timer]
+OnCalendar={{ replica_sync_schedule }}
+OnBootSec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

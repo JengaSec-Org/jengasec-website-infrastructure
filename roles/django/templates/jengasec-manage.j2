@@ -1,0 +1,27 @@
+#!/bin/sh
+# {{ common_managed_banner }}
+#
+# manage.py with the application's environment loaded — the same values
+# gunicorn gets from {{ django_env_file }}.
+#
+#     jengasec-manage createsuperuser
+#     jengasec-manage preflight
+#     jengasec-manage showmigrations
+#
+# Calling manage.py directly is a trap: settings.py only reads a .env inside the
+# checkout, so it sees no database settings, falls back to SQLite, and every
+# command "works" against an empty file. A superuser created that way cannot
+# sign in anywhere.
+#
+# Runs as {{ django_user }}. python-dotenv parses the file, so values with
+# spaces or angle brackets (DJANGO_DEFAULT_FROM_EMAIL) survive intact.
+
+cd {{ django_source_dir }} || exit 1
+exec sudo -u {{ django_user }} {{ django_venv_dir }}/bin/python -c '
+import sys, runpy
+from dotenv import load_dotenv
+load_dotenv(sys.argv[1], override=True)
+sys.path.insert(0, sys.argv[2])
+sys.argv = [sys.argv[2] + "/manage.py"] + sys.argv[3:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+' {{ django_env_file }} {{ django_source_dir }} "$@"

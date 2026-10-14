@@ -66,9 +66,35 @@ account can see every submission and change every score.
 Make it by hand, once:
 
 ```bash
-sudo -u jengasec /opt/jengasec/venv/bin/python \
-    /opt/jengasec/app/manage.py createsuperuser
+sudo jengasec-manage createsuperuser
 ```
+
+## Always `jengasec-manage`, never `manage.py` directly
+
+The environment file lives at `/opt/jengasec/.env`, outside the checkout, and
+`settings.py` only auto-loads a `.env` *inside* it. Run `manage.py` bare and it
+sees no database settings, falls back to SQLite, and every command "succeeds"
+against an empty file — a superuser created that way cannot sign in anywhere.
+
+The role installs `/usr/local/bin/jengasec-manage`, which loads the same file
+gunicorn reads and runs as the app user. The role's own `manage.py` tasks get
+the same environment by parsing that file.
+
+## Sharing a database with Render (venue hosting)
+
+Set `vault_jengasec_db_url` (plus the `vault_s3_*` and `vault_brevo_api_key`
+values, and Render's `DJANGO_SECRET_KEY` as `vault_django_secret_key`) and this
+host becomes a second front door onto the same data as www.jengasec.com — see
+`docs/VENUE-HOSTING.md` in the platform repository. The URL replaces the local
+`JENGASEC_DB_*` settings entirely.
+
+Two rules from that doc are enforced or flagged here:
+
+- **One scheduler.** Leave `vault_django_cron_token` unset while Render holds
+  `DJANGO_CRON_TOKEN`, or every reminder email is sent twice. The role warns.
+- **Insecure cookies only off the internet.** `django_insecure_cookies` makes
+  sign-in work over plain HTTP before TLS exists. The role refuses it when the
+  Cloudflare tunnel is enabled.
 
 ## Reload, never restart
 
@@ -90,6 +116,7 @@ silently throwing that away is worse than a failed play.
 | `django_debug` | `false` | Guarded |
 | `django_allowed_hosts` | `[]` | Required; set in `group_vars/web` |
 | `django_csrf_trusted_origins` | derived from allowed hosts | Scheme included |
+| `django_db_url` | `vault_jengasec_db_url` | Hosted database; wins over `django_db_*` |
 | `django_db_*` | see defaults | `JENGASEC_DB_NAME` switches off SQLite |
 | `django_db_sslmode` | `prefer` | `verify-full` once the CA is trusted |
 | `django_run_migrations` | `true` | |
@@ -97,6 +124,13 @@ silently throwing that away is worse than a failed play.
 | `django_superuser_create` | `false` | Leave it |
 | `django_require_proxy_settings` | `true` | Leave it |
 | `django_redis_enabled` | `false` | settings.py does not read these yet |
+| `django_s3_*` | `vault_s3_*` | Uploads to a bucket instead of `media/` |
+| `django_brevo_api_key` | `vault_brevo_api_key` | Selects the Brevo email backend |
+| `django_email_backend` | Brevo if keyed, else SMTP | An explicit value always wins |
+| `django_site_url` | first allowed host | Base for links in emails |
+| `django_insecure_cookies` | `false` | Venue-only escape hatch; guarded |
+| `django_token_key` / `_deploy_token` / `_cron_token` | from vault, empty | Empty = not written |
+| `django_run_preflight` | `true` | The platform's `manage.py preflight`, as a report |
 
 ## Tags
 
@@ -112,8 +146,9 @@ ansible-playbook -i inventories/production playbooks/platform.yml --tags source,
 ## Verifying
 
 ```bash
-sudo -u jengasec /opt/jengasec/venv/bin/python /opt/jengasec/app/manage.py check --deploy
-sudo -u jengasec /opt/jengasec/venv/bin/python /opt/jengasec/app/manage.py showmigrations
+sudo jengasec-manage check --deploy
+sudo jengasec-manage preflight
+sudo jengasec-manage showmigrations
 ls -l /opt/jengasec/app/staticfiles/ | head
 sudo -u www-data test -r /opt/jengasec/app/media/. && echo "nginx can read media"
 ```

@@ -30,6 +30,73 @@
     success_msg: "ALLOWED_HOSTS: {{ django_allowed_hosts | join(', ') }}"
   tags: [django, always]
 
+- name: Refuse a local database where the database must be shared
+  ansible.builtin.assert:
+    that:
+      - django_db_url | length > 0
+    fail_msg: >-
+      django_require_db_url is true for {{ inventory_hostname }} but
+      vault_jengasec_db_url is empty. This host shares its data with Render;
+      without the Neon URL it would quietly use a local database Render cannot
+      see, and registrations would split between the two.
+    success_msg: "Using the shared database"
+  when: django_require_db_url | bool
+  tags: [django, always]
+
+# Insecure cookies are tolerable only where nobody outside the venue VLANs can
+# see the traffic. The tunnel puts this host on the internet, so the two never
+# go together.
+- name: Refuse insecure cookies on an internet-facing host
+  ansible.builtin.assert:
+    that:
+      - not (django_insecure_cookies | bool) or not (cloudflare_enabled | default(false) | bool)
+    fail_msg: >-
+      django_insecure_cookies is true while cloudflare_enabled is true. Session
+      cookies would travel over plain HTTP on a host the internet can reach —
+      anyone who sees one request can take over that session. Give nginx a
+      certificate instead, or switch the tunnel off.
+    success_msg: "Cookie security fits this host's exposure"
+  tags: [django, always]
+
+# settings.py reads S3_ENDPOINT_URL and both keys with os.environ[...] once
+# S3_BUCKET is set, so a half-filled set is a KeyError at import — gunicorn
+# fails to boot and every request is a 502.
+- name: Refuse an incomplete object-storage configuration
+  ansible.builtin.assert:
+    that:
+      - django_s3_endpoint_url | length > 0
+      - django_s3_access_key_id | length > 0
+      - django_s3_secret_access_key | length > 0
+    fail_msg: >-
+      django_s3_bucket is set but the endpoint or keys are empty. settings.py
+      requires all of them together, and the app would not start. Fill in the
+      vault_s3_* values.
+    success_msg: "Object storage: {{ django_s3_bucket }}"
+  when: django_s3_bucket | length > 0
+  tags: [django, always]
+
+- name: Warn about a second reminder scheduler on a shared database
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: django_cron_token is set and this host uses a shared database
+      (django_db_url). If the Render instance also holds DJANGO_CRON_TOKEN,
+      every reminder email is sent twice. Keep the token on exactly one
+      instance.
+  when:
+    - django_cron_token | length > 0
+    - django_db_url | length > 0
+  tags: [django, always]
+
+- name: Warn that insecure cookies are on
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: DJANGO_INSECURE_COOKIES is on. Sign-in works over plain HTTP,
+      and so does reading someone else's session cookie off the wire. Acceptable
+      only on the isolated venue network, and only until the certificate
+      exists — then set django_insecure_cookies back to false.
+  when: django_insecure_cookies | bool
+  tags: [django, always]
+
 # ── Directories ─────────────────────────────────────────────────────────────
 
 - name: Create the application directories
@@ -150,6 +217,39 @@
   notify: Reload gunicorn
   tags: [django, env]
 
+- name: Install jengasec-manage (manage.py with the environment loaded)
+  ansible.builtin.template:
+    src: jengasec-manage.j2
+    dest: /usr/local/bin/jengasec-manage
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [django, env]
+
+# settings.py only loads a .env from the checkout itself, and this file lives
+# one level up. So manage.py run from Ansible would see none of it — no
+# database settings, and therefore SQLite: migrations "succeed" against an
+# empty file while the real database never changes. Every manage.py task below
+# gets this file's contents as its environment, exactly as gunicorn does.
+- name: Read the application environment for manage.py
+  ansible.builtin.slurp:
+    src: "{{ django_env_file }}"
+  register: django_env_raw
+  no_log: true
+  # In check mode on a first run the file does not exist yet; the manage.py
+  # tasks are skipped in check mode anyway.
+  ignore_errors: "{{ ansible_check_mode }}"
+  tags: [always]
+
+- name: Parse the application environment
+  ansible.builtin.set_fact:
+    django_runtime_env: >-
+      {{ dict((django_env_raw.content | default('') | b64decode).splitlines()
+              | map('regex_search', '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', '\\1', '\\2')
+              | select | list) }}
+  no_log: true
+  tags: [always]
+
 # ── Database ────────────────────────────────────────────────────────────────
 
 # Fail here with a clear message rather than letting migrate produce a wall of
@@ -161,8 +261,7 @@
     chdir: "{{ django_source_dir }}"
   become: true
   become_user: "{{ django_user }}"
-  environment:
-    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  environment: "{{ django_runtime_env }}"
   register: django_db_check
   changed_when: false
   failed_when: false
@@ -171,12 +270,20 @@
 - name: Explain an unreachable database
   ansible.builtin.fail:
     msg: >-
+      {% if django_db_url %}
+      Django cannot reach the hosted database in django_db_url. Check, in this
+      order: this host has outbound internet (the hosted database is not on the
+      LAN); the URL is the pooled connection string, pasted whole, with
+      sslmode=require; the database is not suspended in the provider's console.
+      {% else %}
       Django cannot reach PostgreSQL at
       {{ django_db_host }}:{{ django_db_port }}. Check, in this order: the
       database role has run on {{ django_db_host }}; the firewall on that host
       allows 5432 from {{ ansible_default_ipv4.address | default('this host') }};
       pg_hba.conf has an entry for user '{{ django_db_user }}' from this
-      address. Output was:
+      address.
+      {% endif %}
+      Output was:
       {{ django_db_check.stderr | default(django_db_check.stdout) | default('') | truncate(400) }}
   when: django_db_check.rc != 0
   tags: [django, database]
@@ -191,8 +298,7 @@
     chdir: "{{ django_source_dir }}"
   become: true
   become_user: "{{ django_user }}"
-  environment:
-    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  environment: "{{ django_runtime_env }}"
   register: django_migrate
   changed_when: "'No migrations to apply' not in (django_migrate.stdout | default(''))"
   when: django_run_migrations | bool
@@ -216,8 +322,7 @@
     chdir: "{{ django_source_dir }}"
   become: true
   become_user: "{{ django_user }}"
-  environment:
-    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  environment: "{{ django_runtime_env }}"
   register: django_collect
   changed_when: "'0 static files copied' not in (django_collect.stdout | default(''))"
   when: django_collectstatic | bool
@@ -255,8 +360,7 @@
     chdir: "{{ django_source_dir }}"
   become: true
   become_user: "{{ django_user }}"
-  environment:
-    DJANGO_SETTINGS_MODULE: "{{ django_settings_module }}"
+  environment: "{{ django_runtime_env }}"
   register: django_deploy_check
   changed_when: false
   failed_when: false
@@ -273,13 +377,36 @@
   when: django_run_deploy_check | bool
   tags: [django, verify]
 
+# The platform's own readiness check: storage backend, email, tokens, cookie
+# flags. It knows things `check --deploy` cannot — that uploads would land on
+# local disk, or that insecure cookies are on behind a public SITE_URL.
+- name: Run the platform preflight
+  ansible.builtin.command:
+    cmd: "{{ django_manage }} preflight"
+  args:
+    chdir: "{{ django_source_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  environment: "{{ django_runtime_env }}"
+  register: django_preflight
+  changed_when: false
+  failed_when: false
+  when: django_run_preflight | bool
+  tags: [django, verify]
+
+- name: Report the platform preflight
+  ansible.builtin.debug:
+    var: django_preflight.stdout_lines
+  when: django_run_preflight | bool
+  tags: [django, verify]
+
 - name: Remind about the superuser
   ansible.builtin.debug:
     msg: >-
       No superuser is created automatically — doing so would put its password in
       a variable, and this account can see every submission and change every
-      score. Create it once, by hand:
-      sudo -u {{ django_user }} {{ django_venv_dir }}/bin/python
-      {{ django_source_dir }}/manage.py createsuperuser
+      score. Create it once, by hand: sudo jengasec-manage createsuperuser
+      (not manage.py directly — without the environment it writes to SQLite).
+      On a shared database the Render instance's admin already works here.
   when: not (django_superuser_create | bool)
   tags: [django, verify]

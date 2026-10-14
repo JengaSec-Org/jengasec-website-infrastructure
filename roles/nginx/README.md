@@ -130,7 +130,7 @@ Full list in [`defaults/main.yml`](defaults/main.yml).
 | `nginx_hsts_enabled` | `false` |
 | `nginx_csp_report_only` | `true` |
 | `nginx_rate_limit_login` | `5r/m` |
-| `nginx_client_max_body_size` | `25m` |
+| `nginx_client_max_body_size` | `55m` |
 | `nginx_media_force_download` | `true` |
 | `nginx_proxy_read_timeout` | `180` |
 

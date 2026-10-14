@@ -1,0 +1,30 @@
+---
+# Website database replica — Neon → database VM
+#
+#   make replica INVENTORY=inventories/v1
+#
+# Keeps a live, read-only copy of the website's Neon database in a separate
+# database (jengasec_web) on the database VM, 192.168.40.45. Runs on the web
+# hosts because they reach both Neon (internet) and the database VM (LAN), and
+# already hold the Neon URL. Nothing is installed on the database VM.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │  NEEDS, BEFORE replica_enabled: true  (roles/replica/README.md)           │
+# │                                                                           │
+# │    1. Logical replication enabled in the Neon project                     │
+# │    2. An admin login on 192.168.40.45 that may create databases and       │
+# │       subscriptions, allowed from the web VM in pg_hba.conf               │
+# │    3. vault_replica_admin_user / _password / vault_replica_owner_password │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Run after playbooks/platform.yml: the website's migrations must have created
+# the tables on Neon before there is anything to copy.
+
+- name: "Website database replica — Neon to the database VM"
+  hosts: web
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: replica
+      tags: [replica]

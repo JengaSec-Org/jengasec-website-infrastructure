@@ -19,7 +19,7 @@ RUN = ansible-playbook -i $(INVENTORY) --limit $(LIMIT) $(ANSIBLE_ARGS)
 
 .PHONY: help lint syntax structure check preflight ping facts \
         bootstrap networking security platform database monitoring \
-        backup storage cloudflare tailscale deploy site \
+        backup storage cloudflare tailscale replica deploy site \
         vault-edit vault-view clean
 
 help:
@@ -44,6 +44,7 @@ help:
 	@echo "    make storage       Phase 8  mounts, object storage (both off)"
 	@echo "    make cloudflare    Phase 9  tunnel — READ docs/runbook.md first"
 	@echo "    make tailscale     remote admin access (tailnet + subnet route) — docs/runbook.md §9b"
+	@echo "    make replica       read-only copy of the Neon website DB on the database VM"
 	@echo "    make deploy        ship a revision to a running platform"
 	@echo "    make site          everything, in phase order"
 	@echo ""
@@ -112,6 +113,11 @@ cloudflare:
 # auth key in the vault; the subnet route is approved by hand afterwards.
 tailscale:
 	$(RUN) $(PLAYBOOK_DIR)/tailscale.yml
+
+# Copies the website database from Neon to the database VM, one way. Needs
+# logical replication on in Neon and an admin login there — roles/replica/README.md.
+replica:
+	$(RUN) $(PLAYBOOK_DIR)/replica.yml
 
 # Pin the revision for a real release:  make deploy REV=v1.0.0
 REV ?= HEAD

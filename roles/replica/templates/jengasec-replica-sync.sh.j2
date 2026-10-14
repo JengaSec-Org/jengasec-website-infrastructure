@@ -1,0 +1,174 @@
+#!/bin/bash
+# {{ common_managed_banner }}
+#
+# Keeps {{ replica_database }} on {{ replica_host }} a live, read-only copy of
+# the website's Neon database, through PostgreSQL logical replication.
+#
+# Run by {{ replica_service_name }}.timer every few minutes, and by the replica
+# role. Settings come from {{ replica_env_file }} (systemd EnvironmentFile).
+# To run it by hand and read the result:
+#
+#     sudo systemctl start {{ replica_service_name }}
+#     journalctl -u {{ replica_service_name }} -n 40
+#
+# Each run:
+#   1. points the Neon publication at every current table
+#   2. compares the table/column layout on both sides
+#   3. if they differ, or the subscription or its slot is missing: drops the
+#      copy and rebuilds it — schema from pg_dump, data from the subscription's
+#      initial copy. The data is small; a full rebuild takes seconds and is far
+#      simpler to trust than patching a schema by hand.
+#   4. exits non-zero unless the apply worker is running, so a broken copy
+#      shows up as a failed unit rather than as silence.
+#
+# Why a rebuild on ANY schema change: logical replication copies rows, never
+# ALTER TABLE. When Render runs a migration on Neon, the copy's tables no
+# longer match the incoming rows and the apply worker stops until they do.
+{% raw %}
+set -euo pipefail
+
+PSQL="/usr/lib/postgresql/${PG_CLIENT_VERSION}/bin/psql"
+PG_DUMP="/usr/lib/postgresql/${PG_CLIENT_VERSION}/bin/pg_dump"
+
+log() { echo "replica-sync: $*"; }
+die() { echo "replica-sync: ERROR: $*" >&2; exit 1; }
+
+# Passwords travel in PG* variables scoped to one command, never on a command
+# line where `ps` would show them.
+src() {
+    PGHOST="$SRC_HOST" PGPORT="$SRC_PORT" PGUSER="$SRC_USER" PGPASSWORD="$SRC_PASSWORD" \
+    PGDATABASE="$SRC_DB" PGSSLMODE="$SRC_SSLMODE" PGCONNECT_TIMEOUT=15 "$@"
+}
+dst() {
+    local db="$1"; shift
+    PGHOST="$DST_HOST" PGPORT="$DST_PORT" PGUSER="$DST_ADMIN_USER" PGPASSWORD="$DST_ADMIN_PASSWORD" \
+    PGDATABASE="$db" PGSSLMODE="$DST_SSLMODE" PGCONNECT_TIMEOUT=15 "$@"
+}
+q_src() { src "$PSQL" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
+q_dst() { dst "$1" "$PSQL" -XAtq -v ON_ERROR_STOP=1 -c "$2"; }
+
+case "$DST_DB" in
+    postgres|template0|template1|"$DST_ADMIN_DB")
+        die "DST_DB=$DST_DB is a system or admin database. Refusing." ;;
+esac
+
+# ── 1. Tables to copy ───────────────────────────────────────────────────────
+excluded="''"
+for t in $EXCLUDE_TABLES; do excluded="$excluded,'$t'"; done
+
+table_filter="schemaname = 'public' AND tablename NOT IN ($excluded)"
+pub_tables=$(q_src "SELECT string_agg(format('public.%I', tablename), ', ' ORDER BY tablename) FROM pg_tables WHERE $table_filter")
+table_literals=$(q_src "SELECT string_agg(quote_literal(tablename), ',' ORDER BY tablename) FROM pg_tables WHERE $table_filter")
+
+if [ -z "$pub_tables" ]; then
+    log "Neon has no tables yet — the website's migrations have not run. Nothing to copy."
+    exit 0
+fi
+
+# ── 2. Publication on Neon ──────────────────────────────────────────────────
+# An explicit table list rather than FOR ALL TABLES, which needs a true
+# superuser that Neon does not hand out. Re-set on every run so new tables
+# join it.
+if [ -z "$(q_src "SELECT 1 FROM pg_publication WHERE pubname = '$PUBLICATION'")" ]; then
+    log "creating publication $PUBLICATION on Neon"
+    q_src "CREATE PUBLICATION \"$PUBLICATION\" FOR TABLE $pub_tables" >/dev/null
+else
+    q_src "ALTER PUBLICATION \"$PUBLICATION\" SET TABLE $pub_tables" >/dev/null
+fi
+
+# ── 3. Does the copy match? ─────────────────────────────────────────────────
+# A fingerprint of table/column/type/nullability from information_schema —
+# stable across PostgreSQL versions, unlike pg_dump text, so a Neon on 17 and
+# a database VM on 15 agree when their schemas do.
+fingerprint_sql="SELECT md5(coalesce(string_agg(table_name || '.' || column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY table_name, column_name), '')) FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ($table_literals)"
+
+reason=""
+db_exists=$(q_dst "$DST_ADMIN_DB" "SELECT 1 FROM pg_database WHERE datname = '$DST_DB'")
+sub_exists=$(q_dst "$DST_ADMIN_DB" "SELECT 1 FROM pg_subscription WHERE subname = '$SUBSCRIPTION'")
+slot_exists=$(q_src "SELECT 1 FROM pg_replication_slots WHERE slot_name = '$SUBSCRIPTION'")
+
+if [ -z "$db_exists" ]; then
+    reason="the copy does not exist yet"
+elif [ -z "$sub_exists" ]; then
+    reason="no subscription"
+elif [ -z "$slot_exists" ]; then
+    reason="the replication slot on Neon is gone"
+else
+    src_fp=$(q_src "$fingerprint_sql")
+    dst_fp=$(q_dst "$DST_DB" "$fingerprint_sql")
+    if [ "$src_fp" != "$dst_fp" ]; then
+        reason="the schema changed on Neon"
+    fi
+fi
+
+# ── 4. Rebuild when needed ──────────────────────────────────────────────────
+if [ -n "$reason" ]; then
+    log "rebuilding $DST_DB on $DST_HOST: $reason"
+
+    if [ -n "$db_exists" ]; then
+        marker=$(q_dst "$DST_ADMIN_DB" "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = '$DST_DB'")
+        [ "$marker" = "$MARKER" ] || die "$DST_DB exists on $DST_HOST but was not created by this job (its comment is '$marker'). Refusing to drop it. Pick another replica_database, or drop it by hand if it really is disposable."
+    fi
+
+    if [ -n "$sub_exists" ]; then
+        sub_db=$(q_dst "$DST_ADMIN_DB" "SELECT d.datname FROM pg_subscription s JOIN pg_database d ON d.oid = s.subdbid WHERE s.subname = '$SUBSCRIPTION'")
+        if [ -z "$slot_exists" ]; then
+            # DROP SUBSCRIPTION normally drops its slot on Neon too; with the
+            # slot already gone it would fail, so detach it first.
+            q_dst "$sub_db" "ALTER SUBSCRIPTION \"$SUBSCRIPTION\" DISABLE" >/dev/null
+            q_dst "$sub_db" "ALTER SUBSCRIPTION \"$SUBSCRIPTION\" SET (slot_name = NONE)" >/dev/null
+        fi
+        q_dst "$sub_db" "DROP SUBSCRIPTION \"$SUBSCRIPTION\"" >/dev/null
+        slot_exists=""
+    fi
+
+    # A slot left on Neon by an interrupted run keeps WAL forever and fills
+    # the project's storage. Drop it if nothing is using it.
+    if [ -n "$(q_src "SELECT 1 FROM pg_replication_slots WHERE slot_name = '$SUBSCRIPTION' AND NOT active")" ]; then
+        log "dropping orphaned slot $SUBSCRIPTION on Neon"
+        q_src "SELECT pg_drop_replication_slot('$SUBSCRIPTION')" >/dev/null
+    fi
+
+    q_dst "$DST_ADMIN_DB" "DROP DATABASE IF EXISTS \"$DST_DB\" WITH (FORCE)" >/dev/null
+    q_dst "$DST_ADMIN_DB" "CREATE DATABASE \"$DST_DB\" OWNER \"$DST_OWNER\"" >/dev/null
+    q_dst "$DST_ADMIN_DB" "COMMENT ON DATABASE \"$DST_DB\" IS '$MARKER'" >/dev/null
+
+    # Schema only. Objects are created as the owner role so it can read the
+    # copy without superuser. `CREATE SCHEMA public` is dropped because the
+    # new database already has it; transaction_timeout is a pg_dump 17
+    # setting an older server rejects.
+    log "copying the schema"
+    src "$PG_DUMP" --schema-only --schema=public --no-owner --no-privileges \
+        --no-publications --no-subscriptions --no-comments \
+      | sed -e '/^CREATE SCHEMA public;$/d' -e '/^SET transaction_timeout/d' \
+      | { echo "SET ROLE \"$DST_OWNER\";"; cat; } \
+      | dst "$DST_DB" "$PSQL" -Xq -v ON_ERROR_STOP=1 >/dev/null
+
+    # The subscription copies every existing row, then streams changes.
+    log "subscribing to $PUBLICATION"
+    # Single quotes doubled: the string sits inside a SQL literal.
+    sq="'"
+    conninfo="host=$SRC_HOST port=$SRC_PORT dbname=$SRC_DB user=$SRC_USER password=${SRC_PASSWORD//$sq/$sq$sq} sslmode=$SRC_SSLMODE"
+    q_dst "$DST_DB" "CREATE SUBSCRIPTION \"$SUBSCRIPTION\" CONNECTION '$conninfo' PUBLICATION \"$PUBLICATION\" WITH (copy_data = true, slot_name = '$SUBSCRIPTION')" >/dev/null
+else
+    # Re-enable a subscription someone disabled by hand; harmless otherwise.
+    q_dst "$DST_DB" "ALTER SUBSCRIPTION \"$SUBSCRIPTION\" ENABLE" >/dev/null
+    # Picks up any table newly added to the publication without a column
+    # change elsewhere (an empty new table still changes the fingerprint, so
+    # this is belt and braces).
+    q_dst "$DST_DB" "ALTER SUBSCRIPTION \"$SUBSCRIPTION\" REFRESH PUBLICATION" >/dev/null
+fi
+
+# ── 5. Health ───────────────────────────────────────────────────────────────
+running=""
+for _ in 1 2 3 4 5 6; do
+    running=$(q_dst "$DST_DB" "SELECT 1 FROM pg_stat_subscription WHERE subname = '$SUBSCRIPTION' AND relid IS NULL AND pid IS NOT NULL")
+    [ -n "$running" ] && break
+    sleep 5
+done
+[ -n "$running" ] || die "the apply worker for $SUBSCRIPTION is not running on $DST_HOST. Its server log says why — usually a schema mismatch (wait for the next run) or Neon refusing the connection."
+
+tables=$(q_dst "$DST_DB" "SELECT count(*) FILTER (WHERE srsubstate = 'r') || ' of ' || count(*) FROM pg_subscription_rel r JOIN pg_subscription s ON s.oid = r.srsubid WHERE s.subname = '$SUBSCRIPTION'")
+lag=$(q_dst "$DST_DB" "SELECT coalesce(date_trunc('second', now() - latest_end_time)::text, 'not yet measured') FROM pg_stat_subscription WHERE subname = '$SUBSCRIPTION' AND relid IS NULL")
+log "OK - $tables tables in sync, last confirmed with Neon $lag ago"
+{% endraw %}

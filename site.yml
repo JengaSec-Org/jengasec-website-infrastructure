@@ -51,6 +51,12 @@
 - name: Import Phase 4 — application platform
   ansible.builtin.import_playbook: playbooks/platform.yml
 
+# ── Website database replica ────────────────────────────────────────────────
+# After the platform, so the website's migrations have created the tables on
+# Neon. Off by default; roles/replica/README.md lists what it needs.
+- name: Import website database replica
+  ansible.builtin.import_playbook: playbooks/replica.yml
+
 # ── Phase 8 — Storage ───────────────────────────────────────────────────────
 - name: Import Phase 8 — storage
   ansible.builtin.import_playbook: playbooks/storage.yml

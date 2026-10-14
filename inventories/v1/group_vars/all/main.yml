@@ -34,6 +34,19 @@ jengasec_environment: v1
 jengasec_network_cidr: "192.168.40.0/24"   # Kindaruma lab segment
 jengasec_network_gateway: "192.168.40.1"
 
+# The venue network — where participants, judges and staff sit during the
+# event (jengasec-cyberrange-infrastructure, contracts/address-plan.md). The
+# web VM serves the site to them directly; see the venue section in
+# group_vars/web. VLAN numbers are still "NET to confirm" there: if the plan
+# changes, this list is the only thing to edit.
+jengasec_venue_cidrs:
+  - "10.102.0.0/24"     # VLAN 102 Staff
+  - "10.103.0.0/24"     # VLAN 103 Judges
+  - "10.104.0.0/24"     # VLAN 104 AI Red
+  - "10.105.0.0/22"     # VLAN 105 App Red
+  - "10.106.0.0/24"     # VLAN 106 AI Blue
+  - "10.107.0.0/23"     # VLAN 107 App Blue
+
 # ── Localisation ────────────────────────────────────────────────────────────
 # Matches TIME_ZONE in the platform's config/settings.py. Keeping the servers
 # and Django on the same zone is what makes log correlation possible during an

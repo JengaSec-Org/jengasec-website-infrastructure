@@ -43,6 +43,54 @@ vault_smtp_port: 587
 vault_smtp_user: "sucybersec@strathmore.edu"
 vault_smtp_password: "CHANGE_ME"
 
+# ── Shared with the Render instance (venue hosting) ─────────────────────────
+# ALL OPTIONAL. Leave a key out and the django role writes nothing for it. Set
+# them to make this host a second front door onto the same data as
+# www.jengasec.com — the platform's docs/VENUE-HOSTING.md. Copy each from
+# Render → the service → Environment, and set vault_django_secret_key above to
+# Render's DJANGO_SECRET_KEY too, or sessions and stored tokens do not carry
+# across.
+#
+# Neon pooled connection string. When set it replaces the local PostgreSQL.
+# vault_jengasec_db_url: "postgresql://neondb_owner:CHANGE_ME@ep-CHANGE_ME-pooler.eu-central-1.aws.neon.tech/neondb?sslmode=require"
+#
+# Backblaze B2 bucket for uploads. Without it, files uploaded on Render are
+# missing here and vice versa.
+# vault_s3_bucket: "jengasec-submissions"
+# vault_s3_endpoint_url: "https://s3.CHANGE_ME.backblazeb2.com"
+# vault_s3_region: "CHANGE_ME"
+# vault_s3_access_key_id: "CHANGE_ME"
+# vault_s3_secret_access_key: "CHANGE_ME"
+#
+# Brevo API key — email over HTTPS. Selects the Brevo backend.
+# vault_brevo_api_key: "xkeysib-CHANGE_ME"
+#
+# Encrypts blue-team registry tokens. Must match Render's DJANGO_TOKEN_KEY.
+# vault_django_token_key: "CHANGE_ME"
+#
+# Guards /deployments/api/* for the range's deploy agent.
+# vault_django_deploy_token: "CHANGE_ME"
+#
+# The reminder runner. Leave UNSET while Render holds it — two instances with
+# this token send every reminder twice.
+# vault_django_cron_token: "CHANGE_ME"
+
+# ── Database VM replica (roles/replica) ─────────────────────────────────────
+# A login on 192.168.40.45 that may create databases and subscriptions
+# (superuser, or PostgreSQL 16+ CREATEDB + pg_create_subscription). From
+# whoever administers that VM.
+vault_replica_admin_user: "postgres"
+vault_replica_admin_password: "CHANGE_ME"
+# Set by the role for jengasec_web, the read-only owner of the copy. Generate:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+vault_replica_owner_password: "CHANGE_ME"
+
+# ── Range portal API ────────────────────────────────────────────────────────
+# The admin token for the range team's API on this VM (127.0.0.1:8080). It can
+# revoke anyone's VPN access. Handed over in person — never sent by chat or
+# email, never committed.
+# vault_portal_admin_token: "CHANGE_ME"
+
 # ── Local account passwords ─────────────────────────────────────────────────
 # A HASH, not a plaintext password. Generate with:
 #   mkpasswd --method=sha-512

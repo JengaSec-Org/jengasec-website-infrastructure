@@ -1,0 +1,86 @@
+---
+# Defaults for the `replica` role.
+#
+# Keeps a live, read-only copy of the website's database on the database VM.
+#
+#   Render ─┐
+#           ├─ read + write ─► Neon (PRIMARY) ── logical replication ──► database VM
+#   web VM ─┘                                    (one way, continuous)   jengasec_web
+#
+# Neon is the only copy anything writes to. Two writable copies syncing each
+# other hand out the same id twice the first time two people register at once,
+# and replication stops on the conflict. The copy here is for reading, backup,
+# and a future read-only fallback — never for writes.
+#
+# Runs FROM the web VM, which can reach both Neon (internet) and the database
+# VM (lab LAN). Nothing is installed on the database VM; the role only needs a
+# PostgreSQL login there.
+
+# Off until the prerequisites exist (README): logical replication switched on
+# in the Neon project, and an admin login on the database VM in the vault.
+replica_enabled: false
+
+# ── Source: Neon ────────────────────────────────────────────────────────────
+# The SAME database the website uses. Replication cannot go through Neon's
+# connection pooler, so "-pooler" is stripped from the host to reach the
+# direct endpoint. The owner role from the URL must own the tables (it does —
+# migrations created them) and needs REPLICATION, which Neon grants once
+# logical replication is enabled.
+replica_source_url: "{{ (django_db_url | default('')) | replace('-pooler.', '.') }}"
+replica_source_sslmode: require
+
+# ── Target: the database VM ─────────────────────────────────────────────────
+replica_host: 192.168.40.45
+replica_port: 5432
+replica_sslmode: prefer
+
+# A login allowed to create databases and subscriptions. CREATE SUBSCRIPTION
+# needs superuser (or pg_create_subscription on PostgreSQL 16+).
+replica_admin_user: "{{ vault_replica_admin_user | default('postgres') }}"
+replica_admin_password: "{{ vault_replica_admin_password | default('') }}"
+replica_admin_db: postgres
+
+# The copy, and the role that owns it. A SEPARATE database from the API's —
+# the role never touches anything else on that server, and refuses to drop a
+# database it did not create (see the marker below).
+replica_database: jengasec_web
+replica_owner: jengasec_web
+replica_owner_password: "{{ vault_replica_owner_password | default('') }}"
+
+# Written as the database's COMMENT when the sync job creates it. The job
+# drops and rebuilds the copy when the schema changes, and will only ever drop
+# a database carrying this exact comment.
+replica_marker: "managed by jengasec-replica-sync - rebuilt from Neon, do not write"
+
+# ── Replication objects ─────────────────────────────────────────────────────
+# Publication on Neon, subscription (and slot, same name) on the database VM.
+# The slot name must be unique in the Neon project.
+replica_publication: jengasec_web_pub
+replica_subscription: jengasec_web_sub
+
+# Tables not copied. Everything is copied by default — sessions included, so a
+# future fallback can keep people signed in.
+replica_excluded_tables: []
+
+# ── Client tools ────────────────────────────────────────────────────────────
+# pg_dump refuses to dump a server newer than itself, and Neon runs a newer
+# PostgreSQL than Debian 12's 15 — so the client comes from the PostgreSQL
+# project's own apt repository. Must be >= Neon's major version (Neon console →
+# project settings).
+replica_pg_client_version: 17
+replica_pgdg_key_url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+replica_pgdg_key_path: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+replica_pgdg_repo: "deb [signed-by={{ replica_pgdg_key_path }}] https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release | default('bookworm') }}-pgdg main"
+
+# ── Sync job ────────────────────────────────────────────────────────────────
+# Render runs migrations on every push to main, outside Ansible. A migration
+# that changes a table stops replication until the copy's schema matches, so a
+# timer re-checks rather than relying on someone running this role.
+replica_sync_script: /usr/local/sbin/jengasec-replica-sync
+replica_env_file: /etc/jengasec/replica.env
+replica_service_name: jengasec-replica-sync
+replica_sync_schedule: "*:0/10"         # systemd OnCalendar — every 10 minutes
+
+# Run the sync once at the end of the role, and fail the play if replication
+# is not running afterwards.
+replica_sync_now: true

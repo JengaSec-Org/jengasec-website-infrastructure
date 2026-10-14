@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: replica
+  namespace: jengasec
+  author: Strathmore Cybersecurity Club
+  description: Read-only copy of the website's Neon database on the lab database VM, via logical replication.
+  company: Strathmore University
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - jengasec
+    - infrastructure
+    - postgresql
+    - replication
+
+dependencies: []

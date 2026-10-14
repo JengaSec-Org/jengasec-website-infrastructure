@@ -44,6 +44,7 @@ certificates_subject_alt_names:
   - "DNS:prometheus.{{ jengasec_domain }}"
   - "DNS:backup.{{ jengasec_domain }}"
   - "DNS:jengasec.{{ jengasec_domain }}"
+  - "DNS:{{ jengasec_venue_hostname }}"   # the name participants type at the venue
   - "IP:192.168.40.11"
 
 # ── Remote access ───────────────────────────────────────────────────────────
@@ -69,7 +70,24 @@ tailscale_enabled: true
 #
 # PostgreSQL (5432), Redis (6379) and rsync (873) are absent on purpose: their
 # only client is this same machine, and group_vars here bind them to loopback.
-firewall_rules_host:
+#
+# The lab rules are listed here; the venue rules are generated from
+# jengasec_venue_cidrs (group_vars/all) — one rule per subnet, since UFW takes
+# a single source each. Port 80 is open to the venue only so that someone who
+# types the bare address is redirected to HTTPS instead of timing out.
+firewall_rules_host: "{{ firewall_rules_lab + firewall_rules_venue }}"
+
+firewall_rules_venue: >-
+  {% set rules = [] %}
+  {% for cidr in jengasec_venue_cidrs | default([]) %}
+  {% for port in [80, 443] %}
+  {% set _ = rules.append({'port': port, 'proto': 'tcp', 'from': cidr,
+                           'comment': 'Venue network — ' ~ ('HTTP redirect' if port == 80 else 'HTTPS')}) %}
+  {% endfor %}
+  {% endfor %}
+  {{ rules }}
+
+firewall_rules_lab:
   - port: 443
     proto: tcp
     from: "{{ jengasec_network_cidr }}"

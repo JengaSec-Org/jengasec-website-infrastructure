@@ -1,0 +1,208 @@
+---
+# replica — read-only copy of the website's Neon database on the database VM
+#
+# Everything here runs on the web VM. The database VM is only ever reached as
+# a PostgreSQL server, with the admin login from the vault.
+
+- name: Skip when the replica is switched off
+  ansible.builtin.debug:
+    msg: >-
+      replica_enabled is false for {{ inventory_hostname }} — no copy of the
+      website database is kept on {{ replica_host }}. roles/replica/README.md
+      lists what must exist before switching it on.
+  when: not (replica_enabled | bool)
+  tags: [replica, always]
+
+- name: Keep the replica
+  when: replica_enabled | bool
+  block:
+
+    # ── Guards ──────────────────────────────────────────────────────────────
+
+    - name: Refuse to run without a Neon source
+      ansible.builtin.assert:
+        that:
+          - replica_source_url is match('^postgres(ql)?://')
+        fail_msg: >-
+          replica_source_url is empty or not a PostgreSQL URL. It follows
+          django_db_url, which comes from vault_jengasec_db_url — the Neon
+          connection string the website uses. Without it there is nothing to
+          copy.
+        success_msg: "Source is a PostgreSQL URL"
+      tags: [replica, always]
+
+    - name: Refuse to run without the database VM's admin login
+      ansible.builtin.assert:
+        that:
+          - replica_admin_password | length > 0
+          - replica_owner_password | length > 0
+        fail_msg: >-
+          vault_replica_admin_password or vault_replica_owner_password is
+          empty. The first is a login on {{ replica_host }} allowed to create
+          databases and subscriptions; the second is the password this role
+          sets for the {{ replica_owner }} role that owns the copy.
+        success_msg: "Database VM credentials present"
+      tags: [replica, always]
+
+    - name: Parse the Neon URL
+      ansible.builtin.set_fact:
+        replica_source: "{{ replica_source_url | urlsplit }}"
+      no_log: true
+      tags: [replica, always]
+
+    # Replication over the pooler fails with an error about the replication
+    # protocol, not about the pooler. Catch it here instead.
+    - name: Refuse the pooled endpoint
+      ansible.builtin.assert:
+        that:
+          - "'-pooler' not in replica_source.hostname"
+        fail_msg: >-
+          The source host {{ replica_source.hostname }} is Neon's connection
+          pooler, which cannot carry logical replication. Set
+          replica_source_url to the direct connection string (Neon → Connect,
+          pooled connection OFF).
+        success_msg: "Source is the direct endpoint {{ replica_source.hostname }}"
+      tags: [replica, always]
+
+    # ── Client tools ────────────────────────────────────────────────────────
+
+    - name: Create the PGDG key directory
+      ansible.builtin.file:
+        path: "{{ replica_pgdg_key_path | dirname }}"
+        state: directory
+        mode: "0755"
+      tags: [replica, packages]
+
+    - name: Install the PostgreSQL project's apt signing key
+      ansible.builtin.get_url:
+        url: "{{ replica_pgdg_key_url }}"
+        dest: "{{ replica_pgdg_key_path }}"
+        mode: "0644"
+      tags: [replica, packages]
+
+    - name: Add the PostgreSQL project's apt repository
+      ansible.builtin.apt_repository:
+        repo: "{{ replica_pgdg_repo }}"
+        filename: pgdg
+        state: present
+      tags: [replica, packages]
+
+    # Client only. Nothing here runs a PostgreSQL server.
+    - name: Install the PostgreSQL client and psycopg2
+      ansible.builtin.apt:
+        name:
+          - "postgresql-client-{{ replica_pg_client_version }}"
+          - python3-psycopg2
+        state: present
+      tags: [replica, packages]
+
+    # ── The owner role on the database VM ───────────────────────────────────
+    # The sync job recreates the database; the role outlives it, so its
+    # password and grants are not lost on every rebuild.
+    - name: Create the replica owner role on the database VM
+      community.postgresql.postgresql_user:
+        name: "{{ replica_owner }}"
+        password: "{{ replica_owner_password }}"
+        role_attr_flags: LOGIN,NOSUPERUSER,NOCREATEDB,NOCREATEROLE
+        login_host: "{{ replica_host }}"
+        login_port: "{{ replica_port }}"
+        login_user: "{{ replica_admin_user }}"
+        login_password: "{{ replica_admin_password }}"
+        login_db: "{{ replica_admin_db }}"
+        ssl_mode: "{{ replica_sslmode }}"
+      no_log: true
+      tags: [replica, role]
+
+    # ── Sync job ────────────────────────────────────────────────────────────
+
+    - name: Create the settings directory
+      ansible.builtin.file:
+        path: "{{ replica_env_file | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      tags: [replica, job]
+
+    - name: Write the sync job's settings
+      ansible.builtin.template:
+        src: replica.env.j2
+        dest: "{{ replica_env_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      tags: [replica, job]
+
+    - name: Install the sync script
+      ansible.builtin.template:
+        src: jengasec-replica-sync.sh.j2
+        dest: "{{ replica_sync_script }}"
+        owner: root
+        group: root
+        mode: "0750"
+      tags: [replica, job]
+
+    - name: Install the sync service and timer
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - "{{ replica_service_name }}.service"
+        - "{{ replica_service_name }}.timer"
+      notify: reload systemd for replica
+      tags: [replica, job]
+
+    - name: Apply systemd changes before starting the timer
+      ansible.builtin.meta: flush_handlers
+      tags: [replica, job]
+
+    - name: Enable the sync timer
+      ansible.builtin.systemd:
+        name: "{{ replica_service_name }}.timer"
+        enabled: true
+        state: started
+      tags: [replica, job]
+
+    # ── Run it now ──────────────────────────────────────────────────────────
+    # Through systemd, so this run and the timer's runs are the same thing with
+    # the same environment. A oneshot `start` returns when the script exits.
+    - name: Run the sync once
+      ansible.builtin.command:
+        cmd: "systemctl start {{ replica_service_name }}.service"
+      register: replica_run
+      changed_when: false
+      failed_when: false
+      when: replica_sync_now | bool
+      tags: [replica, sync]
+
+    - name: Read the sync output
+      ansible.builtin.command:
+        cmd: "journalctl -u {{ replica_service_name }}.service -n 25 --no-pager -o cat"
+      register: replica_journal
+      changed_when: false
+      when: replica_sync_now | bool
+      tags: [replica, sync]
+
+    - name: Report the sync
+      ansible.builtin.debug:
+        var: replica_journal.stdout_lines
+      when: replica_sync_now | bool
+      tags: [replica, sync]
+
+    - name: Fail when replication is not running
+      ansible.builtin.fail:
+        msg: >-
+          The sync job failed — the lines above say where. The usual causes, in
+          order: logical replication is not enabled in the Neon project;
+          {{ replica_host }} refuses the admin login (pg_hba.conf needs an entry
+          for {{ ansible_default_ipv4.address | default('this host') }}); the
+          admin login cannot create subscriptions; no free logical replication
+          workers on {{ replica_host }} (README, "On the database VM").
+      when:
+        - replica_sync_now | bool
+        - replica_run.rc != 0
+      tags: [replica, sync]

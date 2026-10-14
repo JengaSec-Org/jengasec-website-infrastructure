@@ -20,7 +20,8 @@ What changed since the baseline survey:
 The repo (`roles/`, `docs/lab-setup.md`, `README.md`) is written for **Debian 12 (Bookworm)**
 guests, a sudo user `jengasec` with no root password, `ufw`, a swap *file*, and a separate Debian
 control node. The plan reproduces exactly that on Proxmox instead of VirtualBox, so every doc in
-the repo still applies verbatim. Nothing runs on the hypervisor itself.
+the repo still applies verbatim. Nothing *Ansible-managed* runs on the hypervisor itself — the one
+exception is the Tailscale client in Stage 0, precisely because it must outlive every VM rebuild.
 
 **Decision: ONE Debian 12 QEMU VM carries everything for v1** — web, database, DNS, backup,
 monitoring, *and* it is its own Ansible control node (`ansible_connection: local`). Replicate onto
@@ -42,6 +43,48 @@ union of every port the box serves, which is the mechanism `roles/firewall` alre
 this (`firewall_rules_merged = common + group + host`, `roles/firewall/tasks/main.yml:26`).
 
 ---
+
+## Stage 0 — Remote access first (Tailscale on the Proxmox host)
+
+Do this before anything else, while physically in the lab. Every later stage can then be done
+from home, including the VM console through the Proxmox UI — so a VM with broken networking is
+still fixable remotely.
+
+The tunnel goes on the **host**, not the VM, on purpose: the thing you rely on to work from home
+must not depend on the thing you are going to rebuild from home. The Ansible `tailscale` role
+(Stage 8) is the managed path for the VM; this is the rescue path, and it stays.
+
+On the host (`ssh root@192.168.40.7`):
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.forwarding = 1\n' > /etc/sysctl.d/99-tailscale.conf
+sysctl -p /etc/sysctl.d/99-tailscale.conf
+tailscale up --advertise-routes=192.168.40.0/24 --accept-dns=false --hostname=netadmin
+```
+
+`tailscale up` prints a login URL. Open it on the laptop and sign in (GitHub or Google — that
+creates the account and the tailnet). Then in https://login.tailscale.com/admin/machines →
+`netadmin` → `⋯`:
+
+1. **Edit route settings** → approve `192.168.40.0/24`. Without this you reach the host only.
+2. **Disable key expiry**. Otherwise the node drops off the tailnet after 180 days — locked out,
+   silently, mid-semester.
+
+Install Tailscale on the laptop (https://tailscale.com/download) and phone, same account. **Test
+before leaving the lab**, laptop on a phone hotspot rather than campus Wi-Fi:
+
+```bash
+ssh root@192.168.40.7                 # through the subnet route
+```
+
+and `https://192.168.40.7:8006`. `--accept-dns=false` keeps Tailscale away from the resolver that
+Stage 1 sets; the Proxmox firewall is off (Warnings §2) so nothing needs opening. The host SNATs
+forwarded traffic, so VMs need no route back to `100.x`.
+
+Later, when a second organiser needs access: invite them to the tailnet and write an ACL
+(`docs/runbook.md` §9b has one). Until then the default policy — everyone on the tailnet reaches
+everything — is one person.
 
 ## Stage 1 — Hypervisor prep (over SSH as root@192.168.40.7)
 
@@ -193,7 +236,7 @@ a host is in seven groups — read the comment there before adding ports to a gr
 
 Two things it cannot contain:
 
-1. **Your SSH public key.** Copy it to `files/ssh-keys/jengasec-admin.pub` (the name listed in
+1. **Your SSH public key.** Copy it to `roles/users/files/ssh-keys/jengasec-admin.pub` (the name listed in
    `group_vars/all/main.yml` → `users_admin_ssh_keys`). The `users` role refuses to run without
    one, because the `ssh` role then disables password login.
 2. **The vault.** `cp inventories/v1/vault.yml.example inventories/v1/vault.yml`, fill in real
@@ -227,15 +270,16 @@ the VM's `/etc/network/interfaces` — that's why Stage 4 put the static config 
 `make cloudflare` (Phase 9, internet exposure) is deliberately **not** in v1 — it needs a Cloudflare
 account/zone/token and the runbook says so.
 
-## Stage 8 — Reach it from off campus (Tailscale)
+## Stage 8 — The VM on the tailnet too (Ansible-managed)
 
-Everything above only works from inside the rack switch. This stage makes the VM — and, through
-it, the Proxmox UI on `.7:8006` — reachable from anywhere, with no inbound port and **nothing
-installed on the hypervisor**: the VM joins a Tailscale tailnet and advertises `192.168.40.0/24`
-as a subnet route. `inventories/v1` already has `tailscale_enabled: true`; what it cannot contain
-is the account. Full walk-through in `docs/runbook.md` §9b, in short:
+Stage 0 already gives you the whole lab through the host. This adds the VM as its own tailnet
+node, managed by the `tailscale` role like everything else on it: a stable name (`jengasec`), a
+tagged identity that survives whoever set it up leaving, and a second subnet router — Tailscale
+fails over between the two, so losing either host keeps the route alive. `inventories/v1` already
+has `tailscale_enabled: true`; what it cannot contain is the auth key. Full walk-through in
+`docs/runbook.md` §9b, in short:
 
-1. Tailscale account → Access Controls: declare `tag:jengasec-server` (runbook has the policy).
+1. Same tailnet as Stage 0 → Access Controls: declare `tag:jengasec-server` (runbook has the policy).
 2. Settings → Keys → Generate auth key: reusable off, pre-approved on, tag `tag:jengasec-server`.
    Into the vault as `vault_tailscale_auth_key`.
 3. On the VM: `make tailscale INVENTORY=inventories/v1`. Run it **after** `make networking` so
@@ -260,14 +304,15 @@ why the ACL in step 1 matters.
 | Monitoring | laptop: `http://192.168.40.11:3000` | Grafana login |
 | Firewall | VM: `sudo ufw status` | 22, 80, 443, 53, 3000, 9090 listed — all of them, not one group's |
 | Idempotent | VM: `make site` second run | no `changed` tasks |
-| Tailnet | VM: `sudo tailscale status` | `jengasec` with a `100.x` address, no "route not approved" warning |
-| Off campus | phone on mobile data: `https://192.168.40.7:8006` | Proxmox login, via the subnet route |
+| Tailnet (host) | host: `tailscale status` | `netadmin` with a `100.x` address, no "route not approved" warning |
+| Tailnet (VM) | VM: `sudo tailscale status` | `jengasec` listed alongside `netadmin` |
+| Off campus | laptop on a phone hotspot: `https://192.168.40.7:8006` | Proxmox login, via the subnet route |
 
 ## Warnings
 
 1. **Never run `make networking` against the Proxmox host** — `roles/networking` rewrites
    `/etc/network/interfaces` and would destroy `vmbr0`. The host is not in any inventory; keep it
-   that way.
+   that way. Stage 0's Tailscale is a hand-installed package, not a reason to add the host.
 2. Proxmox firewall is off and nftables empty on the host. Ports 8006/22/3128/111 are open to the
    whole lab segment. Acceptable for v1, but a datacenter-level firewall rule allowing 8006/22 from
    the laptop's address only is a five-minute follow-up.

@@ -40,7 +40,11 @@ nginx_server_tokens: false            # do not advertise the nginx version
 # Submission uploads are PDFs and DOCX. Too small and the upload fails with a
 # 413 that users read as "the site is broken"; too large and one request can
 # fill the disk.
-nginx_client_max_body_size: "25m"
+#
+# The platform accepts files up to 50 MB (MAX_UPLOAD_BYTES in settings.py) and
+# asks for 55m here, so a request that just fits is never cut off by nginx
+# first with a bare 413.
+nginx_client_max_body_size: "55m"
 nginx_client_body_timeout: 60
 nginx_client_header_timeout: 60
 nginx_send_timeout: 60

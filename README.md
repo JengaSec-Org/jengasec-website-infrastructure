@@ -23,13 +23,13 @@ doubles as teaching material.
 | Security | `security`, `ssh`, `fail2ban`, `audit`, `filesystem-security`, `certificates`, `cloudflare`, `tailscale` |
 | Identity | `users` |
 | Application | `python`, `django`, `gunicorn`, `nginx`, `redis` |
-| Database | `postgresql` |
+| Database | `postgresql`, `replica` |
 | Storage | `storage`, `minio` |
 | Observability | `monitoring`, `logging` |
 | Continuity | `backup` |
 | Automation | `deployment`, `git`, `cron` |
 
-**All thirty roles are implemented.** Six are switched off by default, because
+**All thirty-two roles are implemented.** Several are switched off by default, because
 enabling them is a decision rather than a default — see
 [docs/roles.md](docs/roles.md).
 
