@@ -116,10 +116,12 @@ http {
     gzip_disable "msie6";
 {% endif %}
 
-    # ── Proxy cache path ────────────────────────────────────────────────────
-    # Declared but not used by any location. Django responses are per-user and
-    # must not be cached by a shared proxy — caching a judge's dashboard and
-    # serving it to a competitor is exactly the failure this event cannot have.
+    # ── Proxy temp path ─────────────────────────────────────────────────────
+    # Where nginx spills a Django response too large for its memory buffers
+    # (proxy_buffering is on). A TEMP area, not a cache: nothing is stored or
+    # reused. Django responses are per-user and are never cached here —
+    # serving a judge's dashboard to a competitor is exactly the failure this
+    # event cannot have. The nginx role creates this directory.
     proxy_temp_path /var/cache/nginx/tmp;
 
     # ── Sites ───────────────────────────────────────────────────────────────

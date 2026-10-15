@@ -64,6 +64,22 @@
     mode: "0755"
   tags: [nginx, config]
 
+# nginx.conf sets proxy_temp_path here. Debian's package keeps its own temp
+# files under /var/lib/nginx and never creates /var/cache/nginx, and nginx
+# refuses the whole config (`nginx -t` fails, so the validate below fails)
+# when the parent is missing. Owned by the worker user, which writes to it.
+- name: Create the proxy temp directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ nginx_user }}"
+    group: root
+    mode: "0700"
+  loop:
+    - /var/cache/nginx
+    - /var/cache/nginx/tmp
+  tags: [nginx, config]
+
 # ── TLS certificate ─────────────────────────────────────────────────────────
 
 - name: Check the TLS certificate exists

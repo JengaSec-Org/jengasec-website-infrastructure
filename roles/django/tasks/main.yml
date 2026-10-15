@@ -250,6 +250,31 @@
   no_log: true
   tags: [always]
 
+# ── Static files ────────────────────────────────────────────────────────────
+
+# BEFORE anything that loads the site's URLs. With DEBUG off, the manifest
+# storage looks every static file up in staticfiles.json, which only
+# collectstatic writes — and accounts/urls.py asks for images/logo.png when it
+# is imported. So on a fresh checkout, even `manage.py check` crashes with
+# "Missing staticfiles manifest entry" until this has run. collectstatic does
+# not touch the database, so it is safe this early.
+
+# nginx serves these from disk. It is not an optimisation: whitenoise is in
+# requirements.txt but not in MIDDLEWARE, so with DEBUG off Django serves no
+# static files at all. Skip this and the site renders unstyled.
+- name: Collect static files
+  ansible.builtin.command:
+    cmd: "{{ django_manage }} collectstatic --noinput"
+  args:
+    chdir: "{{ django_source_dir }}"
+  become: true
+  become_user: "{{ django_user }}"
+  environment: "{{ django_runtime_env }}"
+  register: django_collect
+  changed_when: "'0 static files copied' not in (django_collect.stdout | default(''))"
+  when: django_collectstatic | bool
+  tags: [django, static]
+
 # ── Database ────────────────────────────────────────────────────────────────
 
 # Fail here with a clear message rather than letting migrate produce a wall of
@@ -313,24 +338,6 @@
     msg: "{{ django_migrate.stdout_lines | default(['skipped']) | select('search', 'Applying|No migrations') | list }}"
   when: django_run_migrations | bool
   tags: [django, database, migrate]
-
-# ── Static files ────────────────────────────────────────────────────────────
-
-# nginx serves these from disk. It is not an optimisation: whitenoise is in
-# requirements.txt but not in MIDDLEWARE, so with DEBUG off Django serves no
-# static files at all. Skip this and the site renders unstyled.
-- name: Collect static files
-  ansible.builtin.command:
-    cmd: "{{ django_manage }} collectstatic --noinput"
-  args:
-    chdir: "{{ django_source_dir }}"
-  become: true
-  become_user: "{{ django_user }}"
-  environment: "{{ django_runtime_env }}"
-  register: django_collect
-  changed_when: "'0 static files copied' not in (django_collect.stdout | default(''))"
-  when: django_collectstatic | bool
-  tags: [django, static]
 
 # ── Permissions ─────────────────────────────────────────────────────────────
 
