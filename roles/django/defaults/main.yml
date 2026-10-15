@@ -92,6 +92,11 @@ django_token_key: "{{ vault_django_token_key | default('') }}"
 # the range's deploy agent. Empty: both endpoints answer 404.
 django_deploy_token: "{{ vault_django_deploy_token | default('') }}"
 
+# DJANGO_FEED_TOKEN — guards POST /api/feed/, where the AI API (same VM) and
+# observability push marks. Empty: the endpoint answers 404. The AI API's
+# WEBSITE_FEED_TOKEN must hold the same value.
+django_feed_token: "{{ vault_django_feed_token | default('') }}"
+
 # DJANGO_CRON_TOKEN — enables the /tasks/run/ reminder runner. Set it on ONE
 # instance only: two instances sharing a database and both holding it means
 # every reminder email is sent twice. Render holds it today, so it stays empty

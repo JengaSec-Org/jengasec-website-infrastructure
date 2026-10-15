@@ -40,7 +40,7 @@ jengasec_network_gateway: "192.168.40.1"
 # 107 exist but have no wall ports, so they are not listed. If NET change the
 # plan, this list is the only thing to edit.
 jengasec_venue_cidrs:
-  - "10.105.0.0/22"     # VLAN 105 Wi-Fi "JengaSec" — everyone at the venue
+  - "10.105.0.0/24"     # VLAN 105 Wi-Fi "JengaSec" — everyone at the venue (NET: a /24)
   - "10.109.0.0/24"     # VLAN 109 back-end servers (deploy agent, observability)
   - "10.63.0.0/24"      # WireGuard: staff and judges
   - "10.60.0.0/14"      # WireGuard: App Red, App Blue, AI Blue (10.60-10.62)

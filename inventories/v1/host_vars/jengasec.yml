@@ -72,7 +72,17 @@ tailscale_enabled: false
 # jengasec_venue_cidrs (group_vars/all) — one rule per subnet, since UFW takes
 # a single source each. Port 80 is open to the venue only so that someone who
 # types the bare address is redirected to HTTPS instead of timing out.
-firewall_rules_host: "{{ firewall_rules_lab + firewall_rules_venue }}"
+firewall_rules_host: "{{ firewall_rules_lab + firewall_rules_venue + firewall_rules_ai_api }}"
+
+# The AI API (jengasec-cyberrange-infrastructure, ai-api/) runs on this VM too,
+# HTTPS on 8443. Only its clients may reach it: observability's Vector posts
+# telemetry, AI teams and staff read it over WireGuard. Never the Wi-Fi, and
+# never App Red / App Blue (10.60-10.61). Layout: docs/platform-vm.md there.
+firewall_rules_ai_api:
+  - { port: 8443, proto: tcp, from: "192.168.40.60", comment: "AI API - observability Vector ingest" }
+  - { port: 8443, proto: tcp, from: "10.62.0.0/16", comment: "AI API - AI Blue over WireGuard" }
+  - { port: 8443, proto: tcp, from: "10.64.0.0/16", comment: "AI API - AI Red over WireGuard" }
+  - { port: 8443, proto: tcp, from: "10.63.0.0/24", comment: "AI API - staff and judges over WireGuard" }
 
 # An expression rather than a {% for %} block, so it stays a list under
 # ansible-core 2.19+ (a block renders to text there).

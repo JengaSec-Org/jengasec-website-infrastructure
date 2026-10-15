@@ -55,6 +55,10 @@ django_allowed_hosts:
   - "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
   - "{{ jengasec_web_vlan_address }}"         # VLAN 109 address
   - "{{ jengasec_venue_hostname }}"           # venue, via the range's DNS
+  # Checks run ON this VM (curl https://127.0.0.1/healthz/, monitoring). Only
+  # reachable from the VM itself; without them those checks get a 400.
+  - "localhost"
+  - "127.0.0.1"
 
 # Email backend is left to the role: Brevo when vault_brevo_api_key is set
 # (same as Render), SMTP otherwise.

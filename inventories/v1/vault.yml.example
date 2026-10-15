@@ -71,6 +71,10 @@ vault_smtp_password: "CHANGE_ME"
 # Guards /deployments/api/* for the range's deploy agent.
 # vault_django_deploy_token: "CHANGE_ME"
 #
+# Guards POST /api/feed/ for the AI API's marks. Same value as WEBSITE_FEED_TOKEN
+# in /etc/jengasec-ai/ai-api.env. Generate: openssl rand -hex 32
+# vault_django_feed_token: "CHANGE_ME"
+#
 # The reminder runner. Leave UNSET while Render holds it — two instances with
 # this token send every reminder twice.
 # vault_django_cron_token: "CHANGE_ME"
