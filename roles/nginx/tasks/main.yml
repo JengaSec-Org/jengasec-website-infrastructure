@@ -66,14 +66,30 @@
   check_mode: false
   tags: [nginx, always]
 
-# No regex_search capture groups — they crash on ansible-core 2.19 when
-# nothing matches. Falls back to 1.22 (Debian 12's) if the output is odd.
+# Only digits and dots ever reach the version test: regex_findall with no
+# capture group returns exactly "nginx/1.22.1", the prefix is dropped, and
+# anything unexpected falls back to 1.22 (Debian 12's). A value with text in
+# it makes `version` fail with "'<' not supported between str and int".
 - name: Record the nginx version
   ansible.builtin.set_fact:
     nginx_version: >-
-      {{ (nginx_version_out.stderr is search('nginx/[0-9]'))
-         | ternary(nginx_version_out.stderr | regex_replace('(?s)^.*nginx/([0-9.]+).*$', '\\1'),
-                   '1.22.0') }}
+      {{ nginx_version_out.stderr
+         | regex_findall('nginx/[0-9]+\\.[0-9]+\\.?[0-9]*')
+         | map('replace', 'nginx/', '')
+         | first | default('1.22.0', true) }}
+  tags: [nginx, always]
+
+# Decided once, here, as a plain true/false; the template only reads it.
+- name: Decide how HTTP/2 is switched on
+  ansible.builtin.set_fact:
+    nginx_http2_directive: "{{ nginx_version is version('1.25.1', '>=') }}"
+  tags: [nginx, always]
+
+- name: Report the nginx version
+  ansible.builtin.debug:
+    msg: >-
+      nginx {{ nginx_version }} —
+      {{ 'http2 on;' if nginx_http2_directive | bool else 'listen ... ssl http2;' }}
   tags: [nginx, always]
 
 - name: Create the snippets directory
@@ -127,18 +143,6 @@
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
-- name: Write nginx.conf
-  ansible.builtin.template:
-    src: nginx.conf.j2
-    dest: "{{ nginx_conf_dir }}/nginx.conf"
-    owner: root
-    group: root
-    mode: "0644"
-    backup: true
-    validate: "nginx -t -c %s"
-  notify: Reload nginx
-  tags: [nginx, config]
-
 - name: Install the shared proxy parameters
   ansible.builtin.template:
     src: proxy_params.j2
@@ -190,6 +194,22 @@
   when: nginx_remove_default_site | bool
   notify: Reload nginx
   tags: [nginx, site]
+
+# LAST of the files, not first. Its validate (`nginx -t -c`) loads the WHOLE
+# configuration, sites-enabled included — so written first, it was judged
+# against the PREVIOUS run's site file and an old mistake there (e.g. the
+# `http2` directive on nginx 1.22) blocked the very run that fixes it.
+- name: Write nginx.conf
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_conf_dir }}/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    validate: "nginx -t -c %s"
+  notify: Reload nginx
+  tags: [nginx, config]
 
 # ── Validate then apply ─────────────────────────────────────────────────────
 

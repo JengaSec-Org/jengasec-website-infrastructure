@@ -80,7 +80,7 @@ server {
 # ═══════════════════════════════════════════════════════════════════════════
 server {
 {% if nginx_ssl_enabled %}
-{% if nginx_version is version('1.25.1', '>=') %}
+{% if nginx_http2_directive | default(false) | bool %}
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
