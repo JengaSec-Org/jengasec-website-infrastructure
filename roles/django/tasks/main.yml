@@ -106,8 +106,14 @@
     owner: "{{ django_user }}"
     group: "{{ item.group | default(django_group) }}"
     mode: "{{ item.mode }}"
+  # 0751, not 0750: nginx runs as www-data, which is not in the jengasec group,
+  # and must pass THROUGH this directory to serve app/staticfiles/. With 0750
+  # every CSS/JS request is a 403 and the site renders unstyled. The trailing 1
+  # lets others traverse but not list; the secrets in .env stay protected by
+  # that file's own 0640. (Adding www-data to the group instead would let nginx
+  # read .env.)
   loop:
-    - { path: "{{ app_root | default('/opt/jengasec') }}", mode: "0750" }
+    - { path: "{{ app_root | default('/opt/jengasec') }}", mode: "0751" }
     - { path: "{{ django_log_dir }}", mode: "0750", group: adm }
   loop_control:
     label: "{{ item.path }}"

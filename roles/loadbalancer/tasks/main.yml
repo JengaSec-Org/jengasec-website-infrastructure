@@ -71,10 +71,9 @@
 # that role format-agnostic.
 - name: Build the combined certificate and key
   ansible.builtin.shell:
-    cmd: >-
-      cat /etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt
-          /etc/ssl/jengasec/private/{{ inventory_hostname }}.key
-      > {{ loadbalancer_ssl_certificate }}
+    # One line: in a folded block the more-indented middle line kept its line
+    # break, so `> file` ran on its own and produced an EMPTY combined file.
+    cmd: "set -euo pipefail; cat /etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt /etc/ssl/jengasec/private/{{ inventory_hostname }}.key > {{ loadbalancer_ssl_certificate }}"
   args:
     executable: /bin/bash
     creates: "{{ loadbalancer_ssl_certificate }}"

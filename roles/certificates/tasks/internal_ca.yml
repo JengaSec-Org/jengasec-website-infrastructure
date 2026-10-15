@@ -213,15 +213,22 @@
 # nginx wants the host certificate and the issuing CA in one file, in that
 # order. Serving the leaf alone produces "unable to get local issuer
 # certificate" on any client that does not already have the CA.
+#
+# One line on purpose. This used to be a folded (>-) block whose middle line
+# was indented further — and YAML KEEPS the line break before a more-indented
+# line in a folded block. The shell then ran `cat host.crt`, tried to execute
+# the CA file, and finally `> fullchain.crt` on its own: an EMPTY chain file,
+# reported as success, which nginx rejects with "PEM ... no start line".
+#
+# Now: build into a temp file, insist it holds exactly two certificates (leaf
+# + CA), and only then move it into place. A failure leaves the old file alone.
 - name: Build the certificate chain
   ansible.builtin.shell:
-    cmd: >-
-      cat {{ certificates_dir }}/{{ inventory_hostname }}.crt
-          {{ certificates_ca_dir }}/jengasec-ca.crt
-      > {{ certificates_dir }}/{{ inventory_hostname }}-fullchain.crt
+    cmd: "set -euo pipefail; out={{ certificates_dir }}/{{ inventory_hostname }}-fullchain.crt; cat {{ certificates_dir }}/{{ inventory_hostname }}.crt {{ certificates_ca_dir }}/jengasec-ca.crt > \"$out.tmp\"; test \"$(grep -c 'BEGIN CERTIFICATE' \"$out.tmp\")\" -eq 2; if cmp -s \"$out.tmp\" \"$out\"; then rm -f \"$out.tmp\"; echo unchanged; else mv \"$out.tmp\" \"$out\"; echo rebuilt; fi"
   args:
     executable: /bin/bash
-  changed_when: true
+  register: certificates_chain
+  changed_when: "'rebuilt' in certificates_chain.stdout"
   tags: [certificates, host]
 
 - name: Secure the certificate chain

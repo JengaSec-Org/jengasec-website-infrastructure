@@ -96,6 +96,13 @@
 
 # ── Application directories ─────────────────────────────────────────────────
 
+- name: Check whether the application checkout exists yet
+  ansible.builtin.stat:
+    path: "{{ app_source_dir | default('/opt/jengasec/app') }}/.git"
+  register: fs_app_checkout
+  when: filesystem_security_manage_app_dirs | bool
+  tags: [filesystem-security, application]
+
 - name: Create and secure the application directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -106,7 +113,9 @@
   loop: "{{ filesystem_security_app_dirs }}"
   loop_control:
     label: "{{ item.path }} -> {{ item.mode }}"
-  when: filesystem_security_manage_app_dirs | bool
+  when:
+    - filesystem_security_manage_app_dirs | bool
+    - not (item.in_checkout | default(false)) or (fs_app_checkout.stat.exists | default(false))
   tags: [filesystem-security, application]
 
 # ── ACLs ────────────────────────────────────────────────────────────────────

@@ -11,6 +11,8 @@
 #   3. pg_hba.conf lines for the website VM's addresses
 #   4. checks PostgreSQL listens on the network, and opens 5432 in ufw if
 #      ufw is in use
+#   5. an hourly backup of jengasec_web into /var/backups/jengasec_web
+#      (systemd timer, last 48 dumps kept)
 #
 # Safe to run again: anything already in place is left alone, and the password
 # is only changed if you pass --new-password.
@@ -112,6 +114,58 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
     done
     say "ufw allows 5432 from: $WEB_VM_IPS"
 fi
+
+# ── 5. Hourly backups of jengasec_web ───────────────────────────────────────
+# Taken HERE, where pg_dump runs as postgres with no password and always
+# matches the server's version. One dump per hour, the last 48 kept (two
+# days) — during the event the data changes by the minute.
+#   list:     ls -lh /var/backups/jengasec_web/
+#   restore:  sudo -u postgres pg_restore --clean --if-exists -d jengasec_web <file>
+BACKUP_DIR=/var/backups/jengasec_web
+install -d -o postgres -g postgres -m 0700 "$BACKUP_DIR"
+
+cat > /usr/local/sbin/jengasec-web-backup <<EOF
+#!/bin/bash
+# Installed by scripts/cutover/setup-database-vm.sh — hourly dump of $DB.
+set -euo pipefail
+out="$BACKUP_DIR/$DB-\$(date +%Y%m%d-%H%M).dump"
+runuser -u postgres -- pg_dump -Fc "$DB" > "\$out.tmp"
+# An empty or tiny file means pg_dump failed after starting — never keep it
+# in place of a good one.
+[ "\$(stat -c %s "\$out.tmp")" -gt 1024 ] || { rm -f "\$out.tmp"; echo "dump too small" >&2; exit 1; }
+mv "\$out.tmp" "\$out"
+chown postgres:postgres "\$out"; chmod 0600 "\$out"
+ls -1t "$BACKUP_DIR"/$DB-*.dump | tail -n +49 | xargs -r rm -f
+echo "saved \$out (\$(du -h "\$out" | cut -f1))"
+EOF
+chmod 0750 /usr/local/sbin/jengasec-web-backup
+
+cat > /etc/systemd/system/jengasec-web-backup.service <<EOF
+[Unit]
+Description=Hourly dump of the JengaSec website database ($DB)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jengasec-web-backup
+EOF
+
+cat > /etc/systemd/system/jengasec-web-backup.timer <<EOF
+[Unit]
+Description=Dump $DB every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now jengasec-web-backup.timer >/dev/null
+say "Hourly backups of $DB to $BACKUP_DIR (last 48 kept) — next: $(systemctl show jengasec-web-backup.timer -p NextElapseUSecRealtime --value)"
 
 # ── Result ──────────────────────────────────────────────────────────────────
 echo

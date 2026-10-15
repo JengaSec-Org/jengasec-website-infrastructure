@@ -108,5 +108,11 @@ logging_remote_queue_enabled: true
 logging_remote_queue_max_disk: "1g"
 
 # ── Log directory permissions ───────────────────────────────────────────────
-# 0750 root:adm. Members of adm can read logs without sudo; nobody else can.
-logging_dir_mode: "0750"
+# 0755 — Debian's own default for /var/log. NOT 0750: services that log as
+# their own user (postgres -> /var/log/postgresql, grafana -> /var/log/grafana,
+# nginx workers) must be able to ENTER /var/log, and with 0750 root:adm they
+# cannot — PostgreSQL then fails on its next restart and Grafana fails to start.
+# The secrets are in the files, and those are already locked down one by one
+# (syslog, auth.log: 0640 root:adm), so members of adm still read them without
+# sudo and nobody else can.
+logging_dir_mode: "0755"

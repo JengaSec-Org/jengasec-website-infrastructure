@@ -254,7 +254,7 @@ export INVENTORY=inventories/v1 ANSIBLE_ARGS=-K
 | 4 | `make database` | Installs a local PostgreSQL. The website's data is in Neon, so this PostgreSQL sits idle; it is left in place rather than removed. |
 | 5 | `make platform` | The website. The end of the run prints the platform's `preflight` report: no blockers, and storage must say object storage. |
 | 6 | `make monitoring` | Grafana on `http://192.168.40.11:3000` |
-| 7 | `make backup` | |
+| 7 | ~~`make backup`~~ | **Skip in v1.** It would back up the empty local database over an SSH account that has no key, and fail every night. The real data is backed up **hourly on the database VM** by `scripts/cutover/setup-database-vm.sh` (`ls -lh /var/backups/jengasec_web/` there). |
 
 ## 9. Start the replica
 
