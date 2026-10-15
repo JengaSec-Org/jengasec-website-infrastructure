@@ -23,7 +23,9 @@ ROLE=jengasec_web
 
 say()  { echo -e "\033[1m==>\033[0m $*"; }
 die()  { echo -e "\033[31mERROR:\033[0m $*" >&2; exit 1; }
-pg()   { sudo -u postgres psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# From / — the postgres user cannot enter the caller's home directory, and psql
+# otherwise prints "could not change directory to /home/..." on every call.
+pg()   { ( cd / && sudo -u postgres psql -XAtq -v ON_ERROR_STOP=1 "$@" ); }
 
 [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo bash $0 <file.sql>"
 SQL_FILE="${1:-}"
@@ -77,7 +79,7 @@ sed -e 's/\r$//' \
     -e '/^\\restrict /d' -e '/^\\unrestrict /d' \
     "$SQL_FILE" \
   | { echo "SET ROLE $ROLE;"; cat; } \
-  | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB" >/dev/null \
+  | ( cd / && sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB" ) >/dev/null \
   || die "The load failed and was rolled back — $DB is empty, nothing half-loaded. The error is above."
 say "Loaded in $(( $(date +%s) - started ))s"
 

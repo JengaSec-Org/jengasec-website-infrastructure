@@ -100,6 +100,23 @@ vault_replica_owner_password: "CHANGE_ME"
 # on the VM (`sudo passwd netadmin`), not from the vault.
 vault_jengasec_password_hash: "$6$CHANGE_ME"
 
+# ── Purchased TLS certificate (Namecheap) ───────────────────────────────────
+# Only with nginx_custom_tls_enabled: true. docs/custom-certificate.md.
+# The CHAIN: your_domain.crt, then your_domain.ca-bundle, as one block. Keep
+# the "|" and indent every line by two spaces.
+# vault_custom_tls_fullchain: |
+#   -----BEGIN CERTIFICATE-----
+#   ...your domain's certificate...
+#   -----END CERTIFICATE-----
+#   -----BEGIN CERTIFICATE-----
+#   ...the CA bundle...
+#   -----END CERTIFICATE-----
+# The private key generated WITH the CSR — the one secret in this pair.
+# vault_custom_tls_key: |
+#   -----BEGIN PRIVATE KEY-----
+#   ...
+#   -----END PRIVATE KEY-----
+
 # ── Internal certificate authority ──────────────────────────────────────────
 vault_ca_passphrase: "CHANGE_ME"
 

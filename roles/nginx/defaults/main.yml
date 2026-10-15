@@ -110,8 +110,45 @@ nginx_proxy_buffer_size: "16k"
 
 # ── TLS ─────────────────────────────────────────────────────────────────────
 nginx_ssl_enabled: true
-nginx_ssl_certificate: "/etc/ssl/jengasec/{{ inventory_hostname }}-fullchain.crt"
-nginx_ssl_certificate_key: "/etc/ssl/jengasec/private/{{ inventory_hostname }}.key"
+
+# A certificate bought from a public CA (Namecheap / Sectigo PositiveSSL...)
+# for real domain names. Browsers trust it with no warning — for the names it
+# was issued for, and only when those names resolve to this host.
+#
+#   vault_custom_tls_fullchain  your_domain.crt FOLLOWED BY your_domain.ca-bundle,
+#                               pasted as one PEM block (leaf first)
+#   vault_custom_tls_key        the private key made with the CSR
+#
+# When enabled it REPLACES the internal-CA certificate in nginx. The role
+# checks the key matches the certificate and that it has not expired before
+# nginx is pointed at it. docs/custom-certificate.md has the walk-through.
+nginx_custom_tls_enabled: false
+
+# Where the certificate comes from:
+#   vault        bought (Namecheap...): pasted into the vault, written here
+#   letsencrypt  free, issued on this VM by `certbot --manual` with a DNS TXT
+#                record (docs/custom-certificate.md) — nginx reads certbot's
+#                own files, nothing goes in the vault
+nginx_custom_tls_source: vault
+nginx_custom_tls_letsencrypt_name: "{{ (jengasec_custom_domains | default([]) | first) | default('') }}"
+nginx_custom_tls_fullchain: "{{ vault_custom_tls_fullchain | default('') }}"
+nginx_custom_tls_key: "{{ vault_custom_tls_key | default('') }}"
+nginx_custom_tls_dir: /etc/ssl/jengasec/custom
+
+nginx_custom_tls_paths:
+  vault:
+    cert: "{{ nginx_custom_tls_dir }}/fullchain.crt"
+    key: "{{ nginx_custom_tls_dir }}/private.key"
+  letsencrypt:
+    cert: "/etc/letsencrypt/live/{{ nginx_custom_tls_letsencrypt_name }}/fullchain.pem"
+    key: "/etc/letsencrypt/live/{{ nginx_custom_tls_letsencrypt_name }}/privkey.pem"
+
+nginx_ssl_certificate: >-
+  {{ nginx_custom_tls_paths[nginx_custom_tls_source].cert if nginx_custom_tls_enabled | bool
+     else ('/etc/ssl/jengasec/' ~ inventory_hostname ~ '-fullchain.crt') }}
+nginx_ssl_certificate_key: >-
+  {{ nginx_custom_tls_paths[nginx_custom_tls_source].key if nginx_custom_tls_enabled | bool
+     else ('/etc/ssl/jengasec/private/' ~ inventory_hostname ~ '.key') }}
 
 # TLS 1.2 and 1.3 only. 1.0 and 1.1 are deprecated and have known weaknesses.
 nginx_ssl_protocols: "TLSv1.2 TLSv1.3"

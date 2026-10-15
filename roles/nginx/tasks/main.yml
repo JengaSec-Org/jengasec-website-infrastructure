@@ -119,6 +119,110 @@
 
 # ── TLS certificate ─────────────────────────────────────────────────────────
 
+# A purchased certificate (nginx_custom_tls_enabled). Installed from the vault,
+# then checked BEFORE nginx is pointed at it: a key that does not match its
+# certificate, or one past its date, otherwise shows up as nginx refusing to
+# start or every browser refusing the site.
+- name: Install the purchased certificate
+  when: nginx_custom_tls_enabled | bool
+  tags: [nginx, tls]
+  block:
+    - name: Refuse to enable the purchased certificate without it
+      when: nginx_custom_tls_source == 'vault'
+      ansible.builtin.assert:
+        that:
+          - "'BEGIN CERTIFICATE' in nginx_custom_tls_fullchain"
+          - "'PRIVATE KEY' in nginx_custom_tls_key"
+        fail_msg: >-
+          nginx_custom_tls_enabled is true but vault_custom_tls_fullchain or
+          vault_custom_tls_key is empty or not PEM. See docs/custom-certificate.md.
+        quiet: true
+
+    - name: Refuse a Let's Encrypt source that certbot has not issued yet
+      when: nginx_custom_tls_source == 'letsencrypt'
+      ansible.builtin.stat:
+        path: "{{ nginx_ssl_certificate }}"
+      register: nginx_le_cert
+
+    - name: Explain a missing Let's Encrypt certificate
+      when:
+        - nginx_custom_tls_source == 'letsencrypt'
+        - not nginx_le_cert.stat.exists
+      ansible.builtin.fail:
+        msg: >-
+          {{ nginx_ssl_certificate }} does not exist. Issue it first with
+          certbot's DNS challenge (docs/custom-certificate.md, "No certificate
+          yet"), for exactly {{ nginx_custom_tls_letsencrypt_name }}. nginx has
+          NOT been changed.
+
+    - name: Create the purchased-certificate directory
+      when: nginx_custom_tls_source == 'vault'
+      ansible.builtin.file:
+        path: "{{ nginx_custom_tls_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Write the certificate chain
+      when: nginx_custom_tls_source == 'vault'
+      ansible.builtin.copy:
+        content: "{{ nginx_custom_tls_fullchain | trim }}\n"
+        dest: "{{ nginx_custom_tls_dir }}/fullchain.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload nginx
+
+    - name: Write the private key
+      when: nginx_custom_tls_source == 'vault'
+      ansible.builtin.copy:
+        content: "{{ nginx_custom_tls_key | trim }}\n"
+        dest: "{{ nginx_custom_tls_dir }}/private.key"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      notify: Reload nginx
+
+    # The public key inside the certificate must equal the one derived from
+    # the private key. Works for RSA and EC keys alike.
+    - name: Check the key belongs to the certificate
+      ansible.builtin.shell:
+        cmd: "set -o pipefail; c=$(openssl x509 -in {{ nginx_ssl_certificate }} -noout -pubkey | sha256sum); k=$(openssl pkey -in {{ nginx_ssl_certificate_key }} -pubout | sha256sum); test \"$c\" = \"$k\""
+        executable: /bin/bash
+      register: nginx_custom_tls_match
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse a key that does not match the certificate
+      ansible.builtin.fail:
+        msg: >-
+          The private key in vault_custom_tls_key does not belong to the
+          certificate in vault_custom_tls_fullchain. It must be the key that was
+          generated together with the CSR you gave Namecheap. nginx has NOT
+          been changed.
+      when: nginx_custom_tls_match.rc != 0
+
+    - name: Read the purchased certificate
+      community.crypto.x509_certificate_info:
+        path: "{{ nginx_ssl_certificate }}"
+      register: nginx_custom_tls_info
+
+    - name: Refuse an expired certificate
+      ansible.builtin.assert:
+        that:
+          - not nginx_custom_tls_info.expired
+        fail_msg: "The purchased certificate expired on {{ nginx_custom_tls_info.not_after }}."
+        quiet: true
+
+    - name: Report the purchased certificate
+      ansible.builtin.debug:
+        msg: >-
+          Purchased certificate for {{ nginx_custom_tls_info.subject_alt_name | default([]) | join(', ') }}
+          — valid until {{ nginx_custom_tls_info.not_after }}. Browsers trust it
+          only for THOSE names, and only where they resolve to this host.
+
 - name: Check the TLS certificate exists
   ansible.builtin.stat:
     path: "{{ nginx_ssl_certificate }}"

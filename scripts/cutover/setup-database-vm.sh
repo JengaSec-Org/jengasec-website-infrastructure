@@ -31,7 +31,9 @@ MARKER="# jengasec-website"
 say()  { echo -e "\033[1m==>\033[0m $*"; }
 warn() { echo -e "\033[33mWARNING:\033[0m $*"; }
 die()  { echo -e "\033[31mERROR:\033[0m $*" >&2; exit 1; }
-pg()   { sudo -u postgres psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# From / — the postgres user cannot enter the caller's home directory, and psql
+# otherwise prints "could not change directory to /home/..." on every call.
+pg()   { ( cd / && sudo -u postgres psql -XAtq -v ON_ERROR_STOP=1 "$@" ); }
 
 [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo bash $0"
 command -v psql >/dev/null || die "psql not found — is PostgreSQL installed on this VM?"

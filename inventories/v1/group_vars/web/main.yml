@@ -49,7 +49,15 @@ django_debug: false
 #
 # django_csrf_trusted_origins is derived from this list, so the public origin is
 # trusted automatically.
-django_allowed_hosts:
+# Real domain names served with the purchased certificate (see the nginx
+# section below). Each must be covered by the certificate AND resolve to this
+# VM for the people using it — docs/custom-certificate.md.
+jengasec_custom_domains: []
+  # - "venue.jengasec.com"
+
+django_allowed_hosts: "{{ jengasec_base_allowed_hosts + jengasec_custom_domains }}"
+
+jengasec_base_allowed_hosts:
   - "platform.{{ jengasec_domain }}"          # internal, via Bind9
   - "platform.{{ jengasec_public_domain }}"   # public, via the Cloudflare Tunnel
   - "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
@@ -132,9 +140,15 @@ django_csrf_trusted_origins: >-
 # server_name stays the internal name — the TLS certificate is issued for it,
 # and cloudflared presents it as SNI. The public name is an alias, so the same
 # vhost answers both.
-nginx_server_aliases:
-  - "platform.{{ jengasec_public_domain }}"
-  - "{{ jengasec_venue_hostname }}"
+nginx_server_aliases: "{{ ['platform.' ~ jengasec_public_domain, jengasec_venue_hostname] + jengasec_custom_domains }}"
+
+# A browser-trusted certificate for jengasec_custom_domains — free from Let's
+# Encrypt via a DNS TXT record at Namecheap (docs/custom-certificate.md). Off
+# until it has been issued. When on, it replaces the internal-CA certificate.
+nginx_custom_tls_enabled: false
+# letsencrypt = free certificate issued on this VM with certbot's DNS challenge
+# (no certificate bought); vault = one bought and pasted into the vault.
+nginx_custom_tls_source: letsencrypt
 
 # ── Cloudflare ──────────────────────────────────────────────────────────────
 # Off until the Cloudflare prerequisites exist — an account, a zone, a tunnel,

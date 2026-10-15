@@ -41,3 +41,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Database exports from scripts/cutover — every participant's personal data.
+# Never commit them; delete them once the import is VERIFIED.
+jengasec-neon-*
+*.dump
