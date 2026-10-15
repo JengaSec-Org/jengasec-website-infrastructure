@@ -55,6 +55,23 @@
     state: present
   tags: [nginx, packages]
 
+# The site template needs it: how HTTP/2 is switched on changed in 1.25.1, and
+# the newer `http2 on;` is an unknown directive to Debian 12's nginx 1.22.
+# `nginx -v` prints to stderr, as "nginx version: nginx/1.22.1".
+- name: Read the installed nginx version
+  ansible.builtin.command:
+    cmd: nginx -v
+  register: nginx_version_out
+  changed_when: false
+  check_mode: false
+  tags: [nginx, always]
+
+- name: Record the nginx version
+  ansible.builtin.set_fact:
+    nginx_version: >-
+      {{ (nginx_version_out.stderr | regex_search('nginx/([0-9.]+)', '\\1') or ['1.22.0']) | first }}
+  tags: [nginx, always]
+
 - name: Create the snippets directory
   ansible.builtin.file:
     path: "{{ nginx_conf_dir }}/snippets"

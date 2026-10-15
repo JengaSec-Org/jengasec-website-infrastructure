@@ -80,9 +80,16 @@ server {
 # ═══════════════════════════════════════════════════════════════════════════
 server {
 {% if nginx_ssl_enabled %}
+{% if nginx_version is version('1.25.1', '>=') %}
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
+{% else %}
+    # nginx {{ nginx_version }} predates the `http2` directive (1.25.1), so
+    # HTTP/2 is switched on in the listen line instead — Debian 12 ships 1.22.
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+{% endif %}
 {% else %}
     listen 80;
     listen [::]:80;
