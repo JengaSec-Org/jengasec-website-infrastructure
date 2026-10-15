@@ -160,11 +160,23 @@
     mode: "0644"
   tags: [certificates, host]
 
+# When this host IS the CA host — v1, one VM that is also its own control
+# node — there is nothing to ferry: the CSR is signed where it lies and the
+# certificate written straight into place. The fetch/copy round trip below is
+# only for a separate CA host. Run locally it fetched /tmp/<host>.csr onto
+# ITSELF, as the unprivileged control user, over a root-owned file:
+# "Permission denied: /tmp/jengasec.csr".
+- name: Decide whether the CSR must travel to a separate CA host
+  ansible.builtin.set_fact:
+    certificates_sign_remote: "{{ inventory_hostname != certificates_ca_host }}"
+  tags: [certificates, host]
+
 - name: Fetch the CSR to the control node for signing
   ansible.builtin.fetch:
     src: "{{ certificates_dir }}/{{ inventory_hostname }}.csr"
     dest: "/tmp/{{ inventory_hostname }}.csr"
     flat: true
+  when: certificates_sign_remote | bool
   tags: [certificates, host]
 
 # Signed on the CA host, because that is the only machine holding the CA key.
@@ -176,12 +188,17 @@
     group: root
     mode: "0644"
   delegate_to: "{{ certificates_ca_host }}"
+  when: certificates_sign_remote | bool
   tags: [certificates, host]
 
 - name: Sign the host certificate with the CA
   community.crypto.x509_certificate:
-    path: "/tmp/{{ inventory_hostname }}.crt"
-    csr_path: "/tmp/{{ inventory_hostname }}.csr"
+    path: >-
+      {{ ('/tmp/' ~ inventory_hostname ~ '.crt') if certificates_sign_remote | bool
+         else (certificates_dir ~ '/' ~ inventory_hostname ~ '.crt') }}
+    csr_path: >-
+      {{ ('/tmp/' ~ inventory_hostname ~ '.csr') if certificates_sign_remote | bool
+         else (certificates_dir ~ '/' ~ inventory_hostname ~ '.csr') }}
     ownca_path: "{{ certificates_ca_dir }}/jengasec-ca.crt"
     ownca_privatekey_path: "{{ certificates_ca_dir }}/jengasec-ca.key"
     ownca_privatekey_passphrase: "{{ certificates_ca_passphrase }}"
@@ -199,6 +216,7 @@
     dest: "/tmp/{{ inventory_hostname }}.crt"
     flat: true
   delegate_to: "{{ certificates_ca_host }}"
+  when: certificates_sign_remote | bool
   tags: [certificates, host]
 
 - name: Install the signed certificate
@@ -208,6 +226,7 @@
     owner: root
     group: root
     mode: "0644"
+  when: certificates_sign_remote | bool
   tags: [certificates, host]
 
 # nginx wants the host certificate and the issuing CA in one file, in that
