@@ -66,10 +66,14 @@
   check_mode: false
   tags: [nginx, always]
 
+# No regex_search capture groups — they crash on ansible-core 2.19 when
+# nothing matches. Falls back to 1.22 (Debian 12's) if the output is odd.
 - name: Record the nginx version
   ansible.builtin.set_fact:
     nginx_version: >-
-      {{ (nginx_version_out.stderr | regex_search('nginx/([0-9.]+)', '\\1') or ['1.22.0']) | first }}
+      {{ (nginx_version_out.stderr is search('nginx/[0-9]'))
+         | ternary(nginx_version_out.stderr | regex_replace('(?s)^.*nginx/([0-9.]+).*$', '\\1'),
+                   '1.22.0') }}
   tags: [nginx, always]
 
 - name: Create the snippets directory

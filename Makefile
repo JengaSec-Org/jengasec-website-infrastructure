@@ -18,11 +18,17 @@ ANSIBLE_ARGS  ?=
 # vault_* value is silently empty — the first symptom is the certificates role
 # refusing to build a CA "without a passphrase" that is in fact in the vault.
 VAULT_FILE  = $(INVENTORY)/vault.yml
+
+# The inventory FILE, not the folder: given the folder, Ansible tries every file
+# in it as a host list — vault.yml and vault.yml.example included — and prints a
+# "not a valid group definition" warning per secret. group_vars/ and host_vars/
+# next to hosts.yml are still loaded.
+INVENTORY_FILE = $(INVENTORY)/hosts.yml
 VAULT_ARGS  = $(if $(wildcard $(VAULT_FILE)),-e @$(VAULT_FILE),)
 
 # Every target that talks to hosts honours LIMIT, e.g.
 #   make bootstrap LIMIT=server1
-RUN = ansible-playbook -i $(INVENTORY) --limit $(LIMIT) $(VAULT_ARGS) $(ANSIBLE_ARGS)
+RUN = ansible-playbook -i $(INVENTORY_FILE) --limit $(LIMIT) $(VAULT_ARGS) $(ANSIBLE_ARGS)
 
 .PHONY: help lint syntax structure check preflight ping facts \
         bootstrap networking security platform database monitoring \
@@ -78,10 +84,10 @@ preflight:
 	./scripts/preflight.sh $(INVENTORY)
 
 ping:
-	ansible -i $(INVENTORY) --limit $(LIMIT) all -m ansible.builtin.ping
+	ansible -i $(INVENTORY_FILE) --limit $(LIMIT) all -m ansible.builtin.ping
 
 facts:
-	ansible -i $(INVENTORY) --limit $(LIMIT) all -m ansible.builtin.setup
+	ansible -i $(INVENTORY_FILE) --limit $(LIMIT) all -m ansible.builtin.setup
 
 check:
 	$(RUN) --check --diff site.yml

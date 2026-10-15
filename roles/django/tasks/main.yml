@@ -241,12 +241,17 @@
   ignore_errors: "{{ ansible_check_mode }}"
   tags: [always]
 
+# KEY=value lines only (comments and blank lines dropped), each split at its
+# FIRST "=" so values containing "=" (URLs with ?sslmode=...) stay whole.
+# No regex capture groups: on ansible-core 2.19 regex_search with groups
+# crashes on a non-matching line instead of returning nothing.
 - name: Parse the application environment
   ansible.builtin.set_fact:
     django_runtime_env: >-
       {{ dict((django_env_raw.content | default('') | b64decode).splitlines()
-              | map('regex_search', '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', '\\1', '\\2')
-              | select | list) }}
+              | select('match', '^[A-Za-z_][A-Za-z0-9_]*=')
+              | map('split', '=', 1)
+              | list) }}
   no_log: true
   tags: [always]
 
@@ -352,9 +357,13 @@
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
     recurse: true
+  # Symbolic modes with a capital X: execute (enter) on directories only. A
+  # numeric 0750 with recurse also marks every FILE executable — including
+  # media/.gitkeep, which git tracks — and git then reports "local
+  # modifications", so the next run's checkout refuses to update.
   loop:
-    - { path: "{{ django_static_dir }}", group: "www-data", mode: "0755" }
-    - { path: "{{ django_media_dir }}", group: "www-data", mode: "0750" }
+    - { path: "{{ django_static_dir }}", group: "www-data", mode: "u=rwX,g=rX,o=rX" }
+    - { path: "{{ django_media_dir }}", group: "www-data", mode: "u=rwX,g=rX,o=" }
   loop_control:
     label: "{{ item.path }}"
   tags: [django, permissions]
