@@ -35,6 +35,27 @@
     - Restart gunicorn socket
   tags: [gunicorn, units]
 
+# gunicorn 26 added a "control socket" it creates under ~/.gunicorn. The app
+# user's home is hidden by ProtectHome=yes, so it logs "Control server error:
+# Permission denied: '/home/jengasec'" on every start. Nothing here uses it
+# (it is for the gunicornc tool), so it is switched off — but only when the
+# installed gunicorn knows the flag: an older one would refuse to start on an
+# unknown option. On a first run the virtualenv does not exist yet and the
+# check simply says no; the next run picks it up.
+- name: Check whether gunicorn supports --no-control-socket
+  ansible.builtin.shell:
+    cmd: "{{ gunicorn_executable }} --help 2>/dev/null | grep -q -- '--no-control-socket'"
+  register: gunicorn_control_flag
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [gunicorn, units]
+
+- name: Record the control-socket decision
+  ansible.builtin.set_fact:
+    gunicorn_no_control_socket: "{{ gunicorn_control_flag.rc == 0 }}"
+  tags: [gunicorn, units]
+
 - name: Install the gunicorn service unit
   ansible.builtin.template:
     src: gunicorn.service.j2

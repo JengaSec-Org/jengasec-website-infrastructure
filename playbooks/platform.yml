@@ -79,9 +79,9 @@
           - "  curl -k https://{{ nginx_server_name | default('platform.' ~ jengasec_domain) }}/healthz/"
           - "      ^ the whole stack. Expect {\"status\": \"ok\"}."
           - ""
-          - "Then create the first admin account, by hand:"
-          - "  sudo -u {{ app_user | default('jengasec') }} {{ app_venv_dir | default('/opt/jengasec/venv') }}/bin/python \\"
-          - "      {{ app_source_dir | default('/opt/jengasec/app') }}/manage.py createsuperuser"
+          - "Admin accounts arrive with the Neon import (scripts/cutover). To add one by hand:"
+          - "  sudo jengasec-manage createsuperuser"
+          - "      ^ NOT manage.py directly: without the environment it writes to SQLite."
           - ""
           - "Run this playbook a SECOND time — it must report zero changed tasks."
       tags: [always]

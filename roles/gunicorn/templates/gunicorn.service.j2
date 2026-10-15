@@ -17,6 +17,12 @@ Wants=network-online.target
 # that is down shows up as a 500, which is what the /healthz/ endpoint reports.
 After=postgresql.service redis-server.service
 
+# Stop restarting after 5 failures in a minute. A service crash-looping every
+# 5 seconds writes a gigabyte of journal and buries the original error.
+# [Unit] settings: in [Service] systemd ignores them ("Unknown key").
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=notify
 User={{ gunicorn_user }}
@@ -28,6 +34,12 @@ WorkingDirectory={{ gunicorn_chdir }}
 # — /run is a tmpfs — and gunicorn would fail to bind on the next boot.
 RuntimeDirectory={{ gunicorn_runtime_dir }}
 RuntimeDirectoryMode=0755
+# The listening socket (gunicorn.socket) lives INSIDE this directory. Without
+# Preserve, systemd deletes the directory every time this service stops —
+# crash, restart, a failed first start — taking the socket file with it, while
+# gunicorn.socket still reports "listening". nginx then finds no socket and
+# every request is a 502 until the socket unit is restarted by hand.
+RuntimeDirectoryPreserve=yes
 
 # The application's environment. 0640, owned by the app user, and it holds
 # DJANGO_SECRET_KEY and the database password.
@@ -50,12 +62,23 @@ ExecStart={{ gunicorn_executable }} \
     --max-requests {{ gunicorn_max_requests }} \
     --max-requests-jitter {{ gunicorn_max_requests_jitter }} \
     --log-level {{ gunicorn_log_level }} \
+{% if gunicorn_no_control_socket | default(false) | bool %}
+    --no-control-socket \
+{% endif %}
     --error-logfile {{ gunicorn_error_log }} \
 {% if gunicorn_enable_access_log %}
     --access-logfile {{ gunicorn_access_log }} \
     --access-logformat '{{ gunicorn_access_log_format }}' \
 {% endif %}
     {{ gunicorn_wsgi_module }}
+
+# nginx (www-data) must be able to connect to the socket. When systemd hands
+# gunicorn the socket from gunicorn.socket it already is jengasec:www-data 0660
+# — but if that hand-over does not happen, gunicorn binds the path ITSELF, as
+# jengasec:jengasec, and every request is a 502. Set it right either way, as
+# root ('+'), once gunicorn has reported ready (Type=notify: after it bound).
+ExecStartPost=+/bin/chgrp {{ gunicorn_socket_group }} {{ gunicorn_socket_path }}
+ExecStartPost=+/bin/chmod {{ gunicorn_socket_mode }} {{ gunicorn_socket_path }}
 
 # SIGHUP: reload the application without dropping the socket. This is what makes
 # a deployment invisible to anyone mid-request.
@@ -65,11 +88,6 @@ TimeoutStopSec={{ gunicorn_graceful_timeout + 10 }}
 
 Restart={{ gunicorn_restart }}
 RestartSec={{ gunicorn_restart_sec }}
-
-# Stop restarting after 5 failures in a minute. A service crash-looping every
-# 5 seconds writes a gigabyte of journal and buries the original error.
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Logs to the journal — one place to look, already size-capped by the `os` role.
 StandardOutput=journal
