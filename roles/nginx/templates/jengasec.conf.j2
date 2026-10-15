@@ -58,7 +58,9 @@ upstream {{ nginx_upstream_name }} {
 # ═══════════════════════════════════════════════════════════════════════════
 server {
     listen 80;
+{% if nginx_listen_ipv6 | bool %}
     listen [::]:80;
+{% endif %}
     server_name {{ nginx_server_name }}{% for alias in nginx_server_aliases %} {{ alias }}{% endfor %};
 
     # Let certbot answer the ACME challenge over plain HTTP without being
@@ -82,17 +84,23 @@ server {
 {% if nginx_ssl_enabled %}
 {% if nginx_http2_directive | default(false) | bool %}
     listen 443 ssl;
+{% if nginx_listen_ipv6 | bool %}
     listen [::]:443 ssl;
+{% endif %}
     http2 on;
 {% else %}
     # nginx {{ nginx_version }} predates the `http2` directive (1.25.1), so
     # HTTP/2 is switched on in the listen line instead — Debian 12 ships 1.22.
     listen 443 ssl http2;
+{% if nginx_listen_ipv6 | bool %}
     listen [::]:443 ssl http2;
+{% endif %}
 {% endif %}
 {% else %}
     listen 80;
+{% if nginx_listen_ipv6 | bool %}
     listen [::]:80;
+{% endif %}
 {% endif %}
 
     # The internal name first — the certificate is issued for it, and

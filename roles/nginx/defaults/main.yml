@@ -218,3 +218,11 @@ nginx_remove_default_site: true
 # ── Logging ─────────────────────────────────────────────────────────────────
 nginx_access_log_format: main
 nginx_log_not_found: false            # 404s for favicon.ico are not interesting
+
+# ── IPv6 ────────────────────────────────────────────────────────────────────
+# Listen on [::] only when the host has IPv6. The networking role switches it
+# off (disable_ipv6) when networking_ipv6_enabled is false, and nginx then
+# REFUSES TO START on a `listen [::]:443` line — "Address family not supported
+# by protocol". `nginx -t` does not open sockets, so the config check passes
+# and the failure only appears at start.
+nginx_listen_ipv6: "{{ networking_ipv6_enabled | default(false) }}"
